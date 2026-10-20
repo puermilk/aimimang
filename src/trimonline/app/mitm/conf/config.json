@@ -1,0 +1,17 @@
+{
+ "_note": [
+  "爱迷茫 · 配置页「保存 / 导入」这类写操作的来源策略。改完立即生效，不用重启。",
+  "write_allow_any : true = 不限制来源，任何地址都能改配置（慎用；5666 别对公网裸奔）",
+  "write_allow_ip  : 额外放行的 IP 或网段，例如 \"192.168.1.7\" / \"10.0.0.0/8\" / \"2001:db8::/32\"",
+  "auto_trust_first: true = 本机第一次写操作时，信任一次并给浏览器发一张凭证（只发生一次）",
+  "write_token     : 上面发的浏览器凭证。留着它，你这台浏览器换 IP / 换网络也照样能改；",
+  "                  删掉（置空）＝把它作废，下一次写操作会重新信任一次。别外传。",
+  "first_trusted   : 上面那次自动信任用掉没有（留档，可改）",
+  "默认就放行的：内网私网段、IPv6 内网段(ULA/链路本地)、叠加网(100.64/10)、本机 unix socket"
+ ],
+ "write_allow_any": false,
+ "write_allow_ip": [],
+ "auto_trust_first": true,
+ "first_trusted": false,
+ "write_token": ""
+}

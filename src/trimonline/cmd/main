@@ -1,0 +1,61 @@
+#!/bin/bash
+# trimonline — 应用中心 start/stop/status 入口
+#
+# 目录说明（fnOS 安装后）：
+#   $TRIM_APPDEST              应用安装目录（FPK 内 app/ 的内容落在其下）
+#   /usr/local/trim_media_mitm 本应用的运行目录（mitm.py 内是绝对路径，固定在此）
+#
+# 载荷目录由 cmd/_common 统一解析（不同 fnOS 版本/install_type 下落点不同）。
+#
+# 为什么用 run-as=root：接管 /var/run/trim_media.sock、写 systemd 单元、
+# 重启官方服务都需要特权。官方「root 仅限合作企业」针对的是上架应用商店，
+# 本地手动安装不受限（社区 Emby / Lucky / check_mount_daemon 均如此）。
+set -u
+DIR=/usr/local/trim_media_mitm
+SOCK=/var/run/trim_media.sock
+LOG=$DIR/pkg.log
+CMDDIR="$(cd "$(dirname "$0")" && pwd)"
+PAYLOAD="$("$CMDDIR/_common" 2>/dev/null || true)"
+
+log() { echo "$(date '+%F %T') main($1): $2" >> "$LOG" 2>/dev/null; }
+
+health() {
+    r=$(curl -s --max-time 3 --unix-socket "$SOCK" http://x/v/__mitm__/health 2>/dev/null || true)
+    echo "$r" | grep -q '"mitm":1'
+}
+
+case $1 in
+start)
+    log start "payload=${PAYLOAD:-未找到}"
+    if [ -n "$PAYLOAD" ] && [ -x "$PAYLOAD/pkg_install.sh" ]; then
+        # 首选：走载荷安装脚本（就位运行文件 + 写单元 + 启用 + 拉起）
+        bash "$PAYLOAD/pkg_install.sh" >> "$LOG" 2>&1
+    else
+        # 兜底：运行文件已在位，只确保单元存在并启用
+        mkdir -p "$DIR"
+        [ -x "$DIR/setup_units.sh" ] && bash "$DIR/setup_units.sh" >> "$LOG" 2>&1
+        systemctl enable trim-media-mitm.service >/dev/null 2>&1
+        systemctl enable trim-media-mitm-watchdog.timer >/dev/null 2>&1
+        systemctl enable trim-media-mitm-maintenance.timer >/dev/null 2>&1
+        systemctl restart trim-media-mitm.service
+    fi
+    for i in $(seq 1 30); do
+        if health; then log start "接管成功"; exit 0; fi
+        sleep 0.5
+    done
+    log start "接管未就绪"
+    exit 1
+    ;;
+stop)
+    log stop "停止接管"
+    systemctl stop trim-media-mitm.service >/dev/null 2>&1
+    # 只停接管进程，保留看门狗/定时器，下次 start 能立刻恢复
+    exit 0
+    ;;
+status)
+    if health; then exit 0; else exit 3; fi
+    ;;
+*)
+    exit 1
+    ;;
+esac

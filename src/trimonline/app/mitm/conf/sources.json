@@ -1,0 +1,57 @@
+{
+  "_note": "★ 爱迷茫不自带任何内置源：下面 primary / fallback 故意是空的，用谁的源由你自己填。",
+  "_howto": [
+    "推荐用配置页（可视化，填完点「保存并测速」直接出推荐方案）：",
+    "  http://<NAS 的 IP>:5666/v/__mitm__/config",
+    "",
+    "也可以直接改本文件，然后热加载（不用重新打包、不用重启）：",
+    "  curl -s --unix-socket /var/run/trim_media.sock 'http://x/v/__mitm__/sources?reload=1'",
+    "",
+    "查看当前生效的源：",
+    "  curl -s --unix-socket /var/run/trim_media.sock http://x/v/__mitm__/sources",
+    "",
+    "命令行测速（可用性 / 响应时间 / 命中数 / 可放线路数）：",
+    "  python3 /usr/local/trim_media_mitm/source_check.py --keyword 凡人"
+  ],
+  "_rules": [
+    "【采集源】必须是「苹果CMS V10 标准采集接口」，必须同时支持这两个调用：",
+    "  <api>?ac=videolist&wd=关键词     搜索",
+    "  <api>?ac=detail&ids=<vod_id>     详情（搜索结果没带播放地址时补拉）",
+    "响应是 JSON，顶层要有 list 数组；条目至少要有 vod_id / vod_name / vod_play_url。",
+    "vod_play_url 里的地址必须是「直接可放」的（.m3u8 或直链），",
+    "/share/ 这类 HTML 分享页放不了，会被判掉——所以至少要有「一条」m3u8 线路。",
+    "",
+    "【JS 源】就是 TVBox 配置里 type:3 的 drpy 规则站点：",
+    "  js 字段填「规则文件地址」（配置里的 ext），不是运行时那个 drpy2.min.js。",
+    "  运行时（drpy2 + cheerio + QuickJS）已经打进插件，不用另外装 Java 或 Node。",
+    "  ext 也可以直接内联：**base64 文本，或者以 var rule={...} 开头的规则文本。",
+    "详细说明见交付目录里的《源的要求与例子.md》。"
+  ],
+  "_fields": {
+    "name": "名称，同时用作同源去重键，不能重复；不填则取 api 域名",
+    "api": "采集接口，必须以 http:// 或 https:// 开头",
+    "referer": "可选，防盗链用；不填则按 api 域名推导",
+    "lines": "可选，single 单线路 / multi 多线路 / auto 自动（只影响分组显示与推荐排序）",
+    "js": "仅 JS 源用：站点规则文件地址（TVBox 配置里的 ext）"
+  },
+  "_levels": {
+    "primary": "主用：逐个查询，按标题匹配度评分，取最高分",
+    "fallback": "兜底：仅当 primary 全部落空时才查（慢，但收录面不同）",
+    "js": "drpy JS 蜘蛛：由内置引擎直接执行站点规则，与采集源一起参与搜索"
+  },
+  "_example_不生效_照抄时请放到_primary_或_fallback_里": {
+    "name": "例子源",
+    "api": "https://example.com/api.php/provide/vod/",
+    "referer": "https://example.com/",
+    "lines": "auto"
+  },
+  "_example_js_不生效_照抄时请放到_js_里": {
+    "name": "例子 JS 源",
+    "js": "https://example.com/drpy/站点规则.js",
+    "referer": "https://example.com/",
+    "lines": "auto"
+  },
+  "primary": [],
+  "fallback": [],
+  "js": []
+}

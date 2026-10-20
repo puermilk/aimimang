@@ -1,0 +1,9 @@
+#!/bin/bash
+# trimonline 生命周期：拆除接管并还原官方 socket；保留用户数据
+set -u
+PAYLOAD="$("$(cd "$(dirname "$0")" && pwd)/_common" 2>/dev/null || true)"
+if [ -n "${PAYLOAD:-}" ] && [ -x "$PAYLOAD/pkg_uninstall.sh" ]; then
+    bash "$PAYLOAD/pkg_uninstall.sh" && exit 0
+fi
+[ -x /usr/local/trim_media_mitm/pkg_uninstall.sh ] && bash /usr/local/trim_media_mitm/pkg_uninstall.sh
+exit 0

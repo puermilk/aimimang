@@ -1,0 +1,21 @@
+# ---- 构建产物 / 临时文件（不入库） ----
+__pycache__/
+*.py[cod]
+.DS_Store
+*.log
+
+# FPK 安装包：只在 dist/ 保留发布件，仓库根目录的构建产物不入库
+*.fpk
+*.fpk.sha256
+!dist/*.fpk
+!dist/*.fpk.sha256
+
+# 打包时生成，可由 make_lib.sh + build_fpk.py 重建
+src/trimonline/app.tgz
+src/trimonline/app/mitm/lib/
+
+# 与「爱迷茫」无关的另一个项目（strmgate），不随本仓库发布
+src/strmgate/
+
+# 旧版目录里的安装包同样不入库
+旧版-1.0.0/*.fpk

@@ -1,0 +1,37 @@
+#!/bin/bash
+# trimonline 生命周期公共逻辑：解析「载荷目录」并输出其绝对路径。
+#
+# 为什么需要它：
+#   FPK 内 app/ 的内容会被装到「应用安装目录」下，但该目录的位置取决于
+#   manifest 的 install_type，而不同 fnOS 版本给生命周期脚本的 TRIM_APPDEST
+#   语义也略有差异（有的指向 /var/apps/<appname>，有的指向其 target 软链）。
+#   因此这里把候选路径全列出来，谁先命中就用谁，避免写死一层目录名。
+#
+# 命中条件：目录里存在 pkg_install.sh 或 pkg_uninstall.sh（载荷的标志文件）。
+set -u
+
+CANDIDATES="
+${TRIM_APPDEST:-}/mitm
+${TRIM_APPDEST:-}/app/mitm
+${TRIM_APPDEST:-}/target/mitm
+${TRIM_APPDEST:-}/target/app/mitm
+/var/apps/trimonline/target/mitm
+/var/apps/trimonline/app/mitm
+/var/apps/trimonline/mitm
+"
+
+for c in $CANDIDATES; do
+    case "$c" in /*/mitm) ;; *) continue ;; esac
+    if [ -x "$c/pkg_install.sh" ] || [ -x "$c/pkg_uninstall.sh" ]; then
+        echo "$c"
+        exit 0
+    fi
+done
+
+# 兜底：运行文件已经就位（升级/重复执行场景）
+if [ -x /usr/local/trim_media_mitm/pkg_install.sh ]; then
+    echo /usr/local/trim_media_mitm
+    exit 0
+fi
+
+exit 1

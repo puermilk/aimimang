@@ -1,0 +1,3 @@
+#!/bin/bash
+# trimonline 生命周期：无需处理，保持安全、可重复执行并返回成功
+exit 0
