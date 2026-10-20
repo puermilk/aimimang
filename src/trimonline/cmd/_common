@@ -1,7 +1,9 @@
 #!/bin/bash
-# trimonline 生命周期公共逻辑：解析「载荷目录」并输出其绝对路径。
+# trimonline 生命周期公共逻辑：
+#   1. 安装向导取值判断、安装失败提示（供 install_init / install_callback source）
+#   2. 解析「载荷目录」并输出其绝对路径（供生命周期脚本直接执行）
 #
-# 为什么需要它：
+# 为什么需要载荷解析：
 #   FPK 内 app/ 的内容会被装到「应用安装目录」下，但该目录的位置取决于
 #   manifest 的 install_type，而不同 fnOS 版本给生命周期脚本的 TRIM_APPDEST
 #   语义也略有差异（有的指向 /var/apps/<appname>，有的指向其 target 软链）。
@@ -10,7 +12,30 @@
 # 命中条件：目录里存在 pkg_install.sh 或 pkg_uninstall.sh（载荷的标志文件）。
 set -u
 
-CANDIDATES="
+# 安装向导 checkbox 的取值可能是 ["agree"] / agree / true / 1 / yes / on。
+# 统一去掉括号、引号、空白后精确匹配，避免把 disagree 之类误判为同意。
+trim_agree_ok() {
+    local raw="${wizard_agree_terms:-}" norm
+    norm="$(printf '%s' "$raw" | tr -d '[]"{}[:space:]' | tr 'A-Z' 'a-z')"
+    # 兼容 {"field":"agree"} 与 ["agree","..."] 这类序列化形式
+    case "${norm##*:}" in
+        agree|true|1|yes|on) return 0 ;;
+    esac
+    case "${norm%%,*}" in
+        agree|true|1|yes|on) return 0 ;;
+    esac
+    return 1
+}
+
+# 生命周期脚本里的安装失败提示。安装向导和脚本都会调用它。
+trim_fail() {
+    echo "爱迷茫：$*" >&2
+    exit 1
+}
+
+trim_payload() {
+    local c
+    local candidates="
 ${TRIM_APPDEST:-}/mitm
 ${TRIM_APPDEST:-}/app/mitm
 ${TRIM_APPDEST:-}/target/mitm
@@ -20,18 +45,25 @@ ${TRIM_APPDEST:-}/target/app/mitm
 /var/apps/trimonline/mitm
 "
 
-for c in $CANDIDATES; do
-    case "$c" in /*/mitm) ;; *) continue ;; esac
-    if [ -x "$c/pkg_install.sh" ] || [ -x "$c/pkg_uninstall.sh" ]; then
-        echo "$c"
-        exit 0
+    for c in $candidates; do
+        case "$c" in /*/mitm) ;; *) continue ;; esac
+        if [ -x "$c/pkg_install.sh" ] || [ -x "$c/pkg_uninstall.sh" ]; then
+            echo "$c"
+            return 0
+        fi
+    done
+
+    # 兜底：运行文件已经就位（升级/重复执行场景）
+    if [ -x /usr/local/trim_media_mitm/pkg_install.sh ]; then
+        echo /usr/local/trim_media_mitm
+        return 0
     fi
-done
 
-# 兜底：运行文件已经就位（升级/重复执行场景）
-if [ -x /usr/local/trim_media_mitm/pkg_install.sh ]; then
-    echo /usr/local/trim_media_mitm
-    exit 0
+    return 1
+}
+
+# 被 source 时只提供函数，不执行载荷解析；直接执行时才输出路径并返回状态。
+if [ "${BASH_SOURCE[0]}" = "$0" ]; then
+    trim_payload
+    exit $?
 fi
-
-exit 1

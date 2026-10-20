@@ -1,11 +1,14 @@
 appname               = trimonline
-version               = 1.2.6
+version               = 1.2.7
 display_name          = 爱迷茫
 desc                  = 爱迷茫 · 飞牛影视在线源插件。为飞牛影视（trim.media）增加 TVBox 式在线片源：搜索→点开→选集→播放，不下载到 NAS，Web / TV / 手机端通用。插件本身不含任何影视内容、也不内置任何源：源由你自己在 http://<NAS>:5666/v/__mitm__/config 里填（可直接粘一份 TVBox 配置地址自动筛源，网盘类自动剔除），填完一键测速并给出推荐。自带 JS 蜘蛛引擎（drpy2 + QuickJS，已打进插件）：TVBox 配置里 type:3 的 drpy 规则源也能真跑起来，不用装 Java / Node。安装后接管 /var/run/trim_media.sock 转发给官方后端，并注册看门狗与每日维护定时器。
 platform              = x86
 source                = thirdparty
 maintainer            = trimonline
+maintainer_url        = https://github.com/puermilk/aimimang
 distributor           = trimonline
+os_min_version        = 1.2.0
+install_dep_apps      = trim.media
 desktop_uidir         = ui
 desktop_applaunchname = trimonline.Application
 ctl_stop              = true

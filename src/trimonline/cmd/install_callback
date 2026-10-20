@@ -1,8 +1,13 @@
 #!/bin/bash
-# trimonline 生命周期：就位运行文件并启用接管服务（需要 root）
-# 官方不保证 install_callback 一定被调用，cmd/main(start) 会再兜一次，因此必须幂等。
+# trimonline 生命周期：文件落盘后完成安装（需要 root）。
+# 第二道保险：未同意免责声明则不完成安装（正常已在 install_init 被拦截）。
 set -u
-PAYLOAD="$("$(cd "$(dirname "$0")" && pwd)/_common" 2>/dev/null || true)"
+SELF_DIR="$(cd "$(dirname "$0")" && pwd)"
+. "${SELF_DIR}/_common"
+
+trim_agree_ok || trim_fail "未同意《免责声明》，已取消安装。本插件不含任何影视内容，也不内置任何片源。"
+
+PAYLOAD="$("${SELF_DIR}/_common" 2>/dev/null || true)"
 if [ -n "${PAYLOAD:-}" ] && [ -x "$PAYLOAD/pkg_install.sh" ]; then
     bash "$PAYLOAD/pkg_install.sh" && exit 0
 fi
