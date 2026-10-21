@@ -847,15 +847,9 @@ async def _resolve_title(rec):
         log(f"resolve '{title}' → 无匹配")
         return
 
-    # 站点优先级：非凡收录最全（豆瓣库 171/171）、线路最稳。
-    # 评分接近时（差值 <= FFZY_BONUS）一律优先非凡，避免主线路被其它站
-    # 的同名条目抢走。
-    FFZY_BONUS = 0.08
-    top = max(h[0] for h in hits)
-    pref = [h for h in hits
-            if h[1]["name"].startswith("ffzy") and h[0] >= top - FFZY_BONUS]
+    # 按标题匹配度排序；同分时按用户配置的主用/兜底顺序。
+    # 不对任何具体站点做硬编码偏向，避免“没内置源、却内置偏好”的矛盾。
     hits.sort(key=lambda x: (-x[0], CMS_SITES.index(x[1])))
-    hits = pref + [h for h in hits if h not in pref]
     best_score, _bs, best = hits[0][0], None, hits[0][2]
     # 集数最多的候选作为主线路骨架
     main_eps = parse_episodes(best.get("vod_play_url") or "")
@@ -2779,8 +2773,11 @@ async def _probe_duration(guid, rec):
         u0 = eps[0].get("url")
         if not u0 or not _looks_m3u8(u0):
             return
-        ref = rec.get("referer") or "https://www.ffzyapi.com/"
-        async with session.get(u0, headers={"User-Agent": UA, "Referer": ref},
+        ref = rec.get("referer") or ""
+        hdrs = {"User-Agent": UA}
+        if ref:
+            hdrs["Referer"] = ref
+        async with session.get(u0, headers=hdrs,
                                ssl=False,
                                timeout=aiohttp.ClientTimeout(total=12)) as r:
             if r.status != 200:
@@ -2793,8 +2790,7 @@ async def _probe_duration(guid, rec):
         if len(var) == 1 and txt.lstrip().startswith("#EXTM3U") \
                 and "#EXTINF" not in txt:
             vurl = urllib.parse.urljoin(u0, var[0])
-            async with session.get(vurl, headers={"User-Agent": UA,
-                                                 "Referer": ref},
+            async with session.get(vurl, headers=hdrs,
                                    ssl=False,
                                    timeout=aiohttp.ClientTimeout(total=12)) as r2:
                 if r2.status == 200:
