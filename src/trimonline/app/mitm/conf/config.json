@@ -7,11 +7,17 @@
   "write_token     : 上面发的浏览器凭证。留着它，你这台浏览器换 IP / 换网络也照样能改；",
   "                  删掉（置空）＝把它作废，下一次写操作会重新信任一次。别外传。",
   "first_trusted   : 上面那次自动信任用掉没有（留档，可改）",
-  "默认就放行的：内网私网段、IPv6 内网段(ULA/链路本地)、叠加网(100.64/10)、本机 unix socket"
+  "默认就放行的：内网私网段、IPv6 内网段(ULA/链路本地)、叠加网(100.64/10)、本机 unix socket",
+  "",
+  "online_visibility: 在线源（搜索结果 / 豆瓣伪库 / 在线继续播放）对谁可见：",
+  "                   all=所有用户，admin=仅管理员（默认），users=仅 online_users 里的用户",
+  "online_users     : online_visibility=users 时生效，填飞牛影视用户名，大小写不敏感"
  ],
  "write_allow_any": false,
  "write_allow_ip": [],
  "auto_trust_first": true,
  "first_trusted": false,
- "write_token": ""
+ "write_token": "",
+ "online_visibility": "admin",
+ "online_users": []
 }

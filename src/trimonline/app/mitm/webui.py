@@ -583,6 +583,26 @@ pre{background:#0d1117;border:1px solid var(--line);border-radius:8px;
 </div>
 
 <div class="card">
+  <h2>在线源可见范围（按飞牛影视账号）</h2>
+  <div class="sub" style="margin:-6px 0 10px;font-size:12.5px">
+    只影响<b>在线源</b>：搜索结果、豆瓣伪库、在线影片的「继续播放」。
+    本地媒体库、本地播放记录、本地继续播放<b>不受影响</b>。
+    默认<b>仅管理员</b>可见；要分享给家人，改成「所有用户」或「指定用户」。
+  </div>
+  <div class="row">
+    <span style="color:var(--dim)">谁可以看到在线源</span>
+    <select id="visMode" style="width:220px">
+      <option value="admin">仅管理员（默认）</option>
+      <option value="all">所有用户</option>
+      <option value="users">指定用户</option>
+    </select>
+    <span class="tag dim" id="visTag">读取中…</span>
+  </div>
+  <div id="userBox" style="display:none;margin-top:10px"></div>
+  <div id="visMsg" class="sub" style="margin:8px 0 0;font-size:12px"></div>
+</div>
+
+<div class="card">
   <h2>测速与推荐</h2>
   <div class="row">
     <span style="color:var(--dim)">搜索关键词</span>
@@ -621,7 +641,7 @@ pre{background:#0d1117;border:1px solid var(--line);border-radius:8px;
 </div>
 
 <script>
-var S = {primary:[], fallback:[], js:[]};
+var S = {primary:[], fallback:[], js:[], VIS:"admin", ALLOW:[], USERS:[]};
 var LAST = null;
 var UNLOCK_CMD = "curl -s --unix-socket /var/run/trim_media.sock -X POST " +
   "-H 'Content-Type: application/json' " +
@@ -740,6 +760,79 @@ function draw(){
     "# 看/改写操作来源策略（write_token 就是你这台浏览器的写凭证）\n" +
     "curl -s --unix-socket /var/run/trim_media.sock http://x/v/__mitm__/api/config\n" +
     "cat /usr/local/trim_media_mitm/conf/config.json";
+  renderVis();
+}
+
+function renderVis(){
+  var sel = document.getElementById("visMode");
+  if (!sel) return;
+  sel.value = S.VIS || "admin";
+  var box = document.getElementById("userBox");
+  var tag = document.getElementById("visTag");
+  var msg = document.getElementById("visMsg");
+  var names = (S.ALLOW || []).map(function(x){return String(x).toLowerCase();});
+  var n = (S.USERS || []).filter(function(u){
+    return u.is_admin || names.indexOf(String(u.username).toLowerCase()) >= 0 ||
+           names.indexOf(String(u.guid).toLowerCase()) >= 0;
+  }).length;
+  if (tag){
+    tag.className = "tag " + (S.VIS === "all" ? "warn" : (S.VIS === "users" ? "ok" : "dim"));
+    tag.textContent = S.VIS === "all" ? "所有账号可见"
+                    : (S.VIS === "users" ? ("已选 " + n + " 个账号") : "仅管理员");
+  }
+  if (box) box.style.display = (S.VIS === "users") ? "" : "none";
+  if (msg){
+    if (S.VIS === "all"){
+      msg.textContent = "注意：所有飞牛影视账号（包括访客/儿童账号）都会看到在线搜索和在线继续播放。";
+    } else if (S.VIS === "users"){
+      msg.textContent = "管理员始终可见；下面勾选的账号也会看到。未勾选的账号只看到本地媒体库。";
+    } else {
+      msg.textContent = "只有管理员账号能看到在线源；其他账号只看到本地媒体库和本地播放记录。";
+    }
+  }
+  if (S.VIS === "users") renderUsers();
+}
+
+function renderUsers(){
+  var box = document.getElementById("userBox");
+  if (!box) return;
+  var users = S.USERS || [];
+  if (!users.length){
+    box.innerHTML = '<div style="color:var(--warn);font-size:12.5px">' +
+      '没读到飞牛影视用户库（可能官方影视还没启动过，或数据库路径不同）。' +
+      '可以先选「仅管理员」，或在 config.json 里手填 online_users。</div>';
+    return;
+  }
+  var names = (S.ALLOW || []).map(function(x){return String(x).toLowerCase();});
+  var h = '<div class="row" style="gap:10px;flex-wrap:wrap">';
+  users.forEach(function(u, i){
+    var checked = !!u.is_admin ||
+      names.indexOf(String(u.username).toLowerCase()) >= 0 ||
+      names.indexOf(String(u.guid).toLowerCase()) >= 0;
+    h += '<label style="display:flex;align-items:center;gap:6px;color:var(--fg)">' +
+      '<input type="checkbox" ' + (checked ? "checked" : "") +
+      (u.is_admin ? " disabled" : "") +
+      ' onchange="toggleUser(' + i + ')">' +
+      esc(u.username) + (u.is_admin ? ' <span class="tag dim">管理员</span>' : '') +
+      '</label>';
+  });
+  h += '</div>';
+  box.innerHTML = h;
+}
+
+function toggleUser(i){
+  var u = (S.USERS || [])[i];
+  if (!u || u.is_admin) return;
+  var name = String(u.username || "");
+  var key = name.toLowerCase();
+  var guidKey = String(u.guid || "").toLowerCase();
+  var before = (S.ALLOW || []).length;
+  S.ALLOW = (S.ALLOW || []).filter(function(x){
+    var k = String(x).toLowerCase();
+    return k !== key && k !== guidKey;
+  });
+  if (S.ALLOW.length === before && name) S.ALLOW.push(name);
+  renderVis();
 }
 
 function log(s){ document.getElementById("log").textContent = s; }
@@ -804,6 +897,9 @@ function load(){
     S.primary = (d.primary||[]).slice();
     S.fallback = (d.fallback||[]).slice();
     S.js = (d.js||[]).slice();
+    S.VIS = d.online_visibility || "admin";
+    S.ALLOW = (d.online_users||[]).slice();
+    S.USERS = (d.users||[]).slice();
     if (d.file) document.getElementById("file").textContent = d.file;
     if (d.write) drawWrite(d.write);
     if (d.msg) log(d.msg);
@@ -820,6 +916,11 @@ function load(){
 
 function blank(level){ return {name:"", api:"", referer:"", lines:"auto"}; }
 function blankJs(){ return {name:"", js:"", referer:"", lines:"auto"}; }
+
+document.getElementById("visMode").onchange = function(){
+  S.VIS = this.value;
+  renderVis();
+};
 
 document.getElementById("btnAddP").onclick = function(){ S.primary.push(blank()); draw(); };
 document.getElementById("btnAddF").onclick = function(){ S.fallback.push(blank()); draw(); };
@@ -847,8 +948,13 @@ document.getElementById("btnAllowAny").onclick = function(){
 
 document.getElementById("btnSave").onclick = function(){
   var btn = this; btn.disabled = true; log("保存中…");
-  api("/v/__mitm__/api/sources", {primary:S.primary, fallback:S.fallback, js:S.js})
+  api("/v/__mitm__/api/sources", {primary:S.primary, fallback:S.fallback, js:S.js,
+                                  online_visibility:S.VIS, online_users:S.ALLOW})
     .then(function(d){
+      if (d.online_visibility) S.VIS = d.online_visibility;
+      if (d.online_users) S.ALLOW = d.online_users.slice();
+      if (d.users) S.USERS = d.users.slice();
+      draw();
       log("保存成功：" + (d.msg||""));
       return runTest();
     })

@@ -20,6 +20,7 @@ import ipaddress
 import json
 import os
 import re
+import sqlite3
 import sys
 import tempfile
 import time
@@ -102,6 +103,18 @@ UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
 CONF_DIR = "/usr/local/trim_media_mitm/conf"
 SOURCES_FILE = os.path.join(CONF_DIR, "sources.json")
 CONFIG_FILE = os.path.join(CONF_DIR, "config.json")
+
+# 飞牛影视自己的用户库 / 登录令牌库。插件只读，用来判断「当前请求是谁」。
+# 在线源的可见范围（所有用户 / 仅管理员 / 指定用户）就靠这张表落地。
+TRIM_DATA_DIR = "/usr/local/apps/@appdata/trim.media"
+TRIM_MEDIA_DB = os.path.join(TRIM_DATA_DIR, "database", "trimmedia.db")
+TRIM_ACTIVITY_DB = os.path.join(TRIM_DATA_DIR, "database", "trimactivity.db")
+_TRIM_DB_FALLBACKS = [
+    ("/vol1/@appdata/trim.media/database/trimmedia.db",
+     "/vol1/@appdata/trim.media/database/trimactivity.db"),
+    ("/vol2/@appdata/trim.media/database/trimmedia.db",
+     "/vol2/@appdata/trim.media/database/trimactivity.db"),
+]
 
 # 写回文件时附带的说明（用户手改时能看懂）
 SOURCE_HELP = [
@@ -379,8 +392,8 @@ def save_registry(force=False):
 
 
 # ── 观看记录（继续播放）─────────────────────────────────────────
-# 官方后端的 POST /play/list 直接返回 501 Not Implemented，
-# 所以「继续播放」永远是空的。这里自己记录、自己出列表。
+# 本地影片的记录由官方 /play/record 写进 item_user_play；在线影片官方不认识，
+# 这里按用户单独记一份。play/list 会把官方本地列表和在线列表合并返回。
 WATCH_FILE = "/usr/local/trim_media_mitm/watch_history.json"
 WATCH_MAX = 100
 
@@ -404,28 +417,88 @@ def save_watch():
 watch.update(load_watch())
 
 
-def note_watch(guid, pos, extra=None):
-    """记录一条观看进度。pos<=0 表示已看完/退出，不进继续播放。"""
+def _watch_owner(rec):
+    return str(rec.get("u") or "") if isinstance(rec, dict) else ""
+
+
+def _watch_guid(key, rec):
+    """兼容旧格式：旧版 key 就是 guid，没有 u / g 字段。"""
+    g = rec.get("g") if isinstance(rec, dict) else ""
+    if isinstance(g, str) and g:
+        return g
+    return key.split("|", 1)[1] if "|" in key else key
+
+
+def _watch_key(user_guid, guid):
+    return (user_guid or "") + "|" + guid
+
+
+def note_watch(guid, pos, extra=None, user=None):
+    """记录一条观看进度（按用户隔离）。pos<=0 表示已看完/退出。"""
     if not guid or not isinstance(registry.get(guid), dict):
         return
     try:
         pos = int(float(pos or 0))
     except Exception:
         pos = 0
+    uid = str((user or {}).get("guid") or "")
+    key = _watch_key(uid, guid)
     if pos <= 0:
+        # 看完/退出：清掉这个用户自己的进度，别让「继续播放」一直挂着旧位置。
+        # 管理员顺手清掉旧版没有 u 字段的遗留记录。
+        changed = watch.pop(key, None) is not None
+        if (user or {}).get("is_admin") and not _watch_owner(watch.get(guid, {})):
+            changed = watch.pop(guid, None) is not None or changed
+        if changed:
+            save_watch()
         return
-    watch[guid] = {"ts": pos, "at": int(time.time()), **(extra or {})}
-    if len(watch) > WATCH_MAX:
-        for g, _ in sorted(watch.items(),
-                           key=lambda kv: kv[1].get("at", 0))[:len(watch) - WATCH_MAX]:
-            watch.pop(g, None)
+    rec = {"ts": pos, "at": int(time.time()), "g": guid, "u": uid}
+    rec.update(extra or {})
+    watch[key] = rec
+    mine = [(k, v) for k, v in watch.items()
+            if _watch_owner(v) == uid and isinstance(v, dict)]
+    if len(mine) > WATCH_MAX:
+        for k, _ in sorted(mine, key=lambda kv: kv[1].get("at", 0))[:len(mine) - WATCH_MAX]:
+            watch.pop(k, None)
     save_watch()
 
 
-def watch_list():
-    """继续播放列表：按最近观看倒序，附完整条目字段"""
+def remove_watch(guid, user=None):
+    """删除某个用户自己的在线观看记录；管理员顺手清掉旧版遗留记录。"""
+    uid = str((user or {}).get("guid") or "")
+    changed = False
+    if watch.pop(_watch_key(uid, guid), None) is not None:
+        changed = True
+    if (user or {}).get("is_admin") and not _watch_owner(watch.get(guid, {})):
+        if watch.pop(guid, None) is not None:
+            changed = True
+    if changed:
+        save_watch()
+
+
+def watch_list(user=None):
+    """继续播放列表：按用户隔离，按最近观看倒序，附完整条目字段。"""
+    uid = str((user or {}).get("guid") or "")
+    is_admin = bool((user or {}).get("is_admin"))
+    chosen = {}
+    for key, rec in watch.items():
+        if not isinstance(rec, dict):
+            continue
+        owner = _watch_owner(rec)
+        if owner:
+            if owner != uid:
+                continue
+        elif not is_admin:
+            # 旧版记录没有 u 字段：只给管理员看，避免升级后把历史暴露给其他账号
+            continue
+        guid = _watch_guid(key, rec)
+        if not guid:
+            continue
+        old = chosen.get(guid)
+        if old is None or rec.get("at", 0) > old.get("at", 0):
+            chosen[guid] = rec
     out = []
-    for guid, rec in sorted(watch.items(),
+    for guid, rec in sorted(chosen.items(),
                             key=lambda kv: kv[1].get("at", 0), reverse=True):
         r = registry.get(guid)
         if not isinstance(r, dict) or not (r.get("eps") or []):
@@ -437,6 +510,51 @@ def watch_list():
         item["play_position"] = rec.get("ts", 0)
         item["play_error"] = ""
         out.append(item)
+    return out
+
+
+def _play_body(body):
+    try:
+        pd = json.loads((body or b"").decode("utf-8", "replace") or "{}")
+        return pd if isinstance(pd, dict) else {}
+    except Exception:
+        return {}
+
+
+def _play_gid(pd, body_guid=None, path_guid=None):
+    return str((pd or {}).get("item_guid")
+               or (pd or {}).get("guid")
+               or body_guid or path_guid or "")
+
+
+def _play_main_guid(gid):
+    """在线条目（含 onv/ona 派生 guid）→ 主 guid；本地 guid → None。"""
+    if not gid:
+        return None
+    if gid in registry:
+        return gid
+    return resolve_guid(gid)
+
+
+def _http_status(head):
+    try:
+        return int(head.split(b" ", 2)[1])
+    except Exception:
+        return 0
+
+
+def _merge_play_items(local, online):
+    """官方本地继续播放 + 在线继续播放，按 guid 去重（本地优先）。"""
+    out, seen = [], set()
+    for it in list(local or []) + list(online or []):
+        if not isinstance(it, dict):
+            continue
+        g = it.get("guid")
+        if g and g in seen:
+            continue
+        if g:
+            seen.add(g)
+        out.append(it)
     return out
 
 
@@ -1515,6 +1633,10 @@ _CONFIG_NOTE = [
     "                  删掉（置空）＝把它作废，下一次写操作会重新信任一次。别外传。",
     "first_trusted   : 上面那次自动信任用掉没有（留档，可改）",
     "默认就放行的：内网私网段、IPv6 内网段(ULA/链路本地)、叠加网(100.64/10)、本机 unix socket",
+    "",
+    "online_visibility: 在线源（搜索结果 / 豆瓣伪库 / 在线继续播放）对谁可见：",
+    "                   all=所有用户，admin=仅管理员（默认），users=仅 online_users 里的用户",
+    "online_users     : online_visibility=users 时生效，填飞牛影视用户名，大小写不敏感",
 ]
 
 DEFAULT_CONFIG = {
@@ -1524,6 +1646,9 @@ DEFAULT_CONFIG = {
     "auto_trust_first": True,
     "first_trusted": False,
     "write_token": "",
+    # 默认只给管理员看，避免在线源（以及在线观看记录）默认暴露给全家所有账号。
+    "online_visibility": "admin",
+    "online_users": [],
 }
 
 # 下发到浏览器的写操作凭证（cookie 名）。它不是给人看的，浏览器自动带。
@@ -1586,7 +1711,175 @@ def save_config(patch):
         os.replace(tmp, CONFIG_FILE)
     except Exception as e:
         return False, "写不了 %s：%s" % (CONFIG_FILE, repr(e)[:120])
+    _POLICY_CACHE["ts"] = 0.0
     return True, "已保存"
+
+
+# ---------------------------------------------------------- 用户 / 可见范围 ---
+# 飞牛影视把「谁登录了」记在 trimactivity.db 的 user_token 表（token → user_guid），
+# 用户资料在 trimmedia.db 的 user 表。只读查询，不改官方数据。
+_POLICY_CACHE = {"ts": 0.0, "vis": "admin", "users": set()}
+_USER_CACHE = {}                 # token -> (expire_at, user|None)
+_USER_CACHE_TTL = 60.0
+_USER_CACHE_MAX = 256
+_DB_ERR = {}                     # path -> 上次报错时间，避免刷屏
+
+
+def _db_paths():
+    """返回 (trimmedia.db, trimactivity.db)；兼容数据目录不在 /usr/local 的安装。"""
+    pairs = [(TRIM_MEDIA_DB, TRIM_ACTIVITY_DB)] + _TRIM_DB_FALLBACKS
+    for media, activity in pairs:
+        if os.path.exists(media) and os.path.exists(activity):
+            return media, activity
+    return TRIM_MEDIA_DB, TRIM_ACTIVITY_DB
+
+
+def _ro_connect(path):
+    uri = "file:" + urllib.parse.quote(path, safe="/") + "?mode=ro"
+    con = sqlite3.connect(uri, uri=True, timeout=0.5)
+    con.row_factory = sqlite3.Row
+    con.execute("PRAGMA busy_timeout=500")
+    return con
+
+
+def _db_rows(path, sql, args=()):
+    con = None
+    try:
+        con = _ro_connect(path)
+        return con.execute(sql, args).fetchall()
+    except Exception as e:
+        now = time.time()
+        if now - _DB_ERR.get(path, 0) > 300:
+            _DB_ERR[path] = now
+            log("读取官方数据库失败（在线源权限会按不可识别处理）:",
+                os.path.basename(path), repr(e)[:100])
+        return []
+    finally:
+        if con is not None:
+            try:
+                con.close()
+            except Exception:
+                pass
+
+
+def _db_one(path, sql, args=()):
+    rows = _db_rows(path, sql, args)
+    return rows[0] if rows else None
+
+
+def _token_from_headers(headers):
+    """从 Cookie / Authorization 里取飞牛影视登录 token。"""
+    raw = headers.get("cookie") or ""
+    for part in raw.split(";"):
+        if "=" not in part:
+            continue
+        k, v = part.split("=", 1)
+        if k.strip() == "Trim-MC-token":
+            return urllib.parse.unquote(v.strip().strip('"'))
+    auth = (headers.get("authorization") or "").strip()
+    if auth.lower().startswith("bearer "):
+        auth = auth[7:].strip()
+    if re.fullmatch(r"[0-9a-fA-F]{32}", auth):
+        return auth
+    return ""
+
+
+def request_user(headers):
+    """当前请求对应的飞牛影视用户；未登录 / 认不出来返回 None。"""
+    tok = _token_from_headers(headers)
+    if not tok:
+        return None
+    now = time.time()
+    hit = _USER_CACHE.get(tok)
+    if hit and hit[0] > now:
+        return hit[1]
+    media_db, activity_db = _db_paths()
+    row = _db_one(activity_db,
+                  "select user_guid from user_token "
+                  "where token=? and status=1 limit 1", (tok,))
+    user = None
+    if row:
+        urow = _db_one(media_db,
+                       "select guid,username,is_admin,status from user "
+                       "where guid=? and status=1 limit 1",
+                       (row["user_guid"],))
+        if urow:
+            user = {
+                "guid": str(urow["guid"] or ""),
+                "username": str(urow["username"] or ""),
+                "is_admin": bool(int(urow["is_admin"] or 0)),
+            }
+    if len(_USER_CACHE) >= _USER_CACHE_MAX:
+        # 简单淘汰：先清掉过期的，再清最早写入的
+        for k in [k for k, v in _USER_CACHE.items() if v[0] <= now]:
+            _USER_CACHE.pop(k, None)
+        while len(_USER_CACHE) >= _USER_CACHE_MAX:
+            _USER_CACHE.pop(next(iter(_USER_CACHE)), None)
+    _USER_CACHE[tok] = (now + _USER_CACHE_TTL, user)
+    return user
+
+
+def media_users():
+    """给配置页列出的飞牛影视用户（只列启用中的）。"""
+    media_db, _ = _db_paths()
+    rows = _db_rows(media_db,
+                    "select guid,username,is_admin from user "
+                    "where status=1 order by is_admin desc, username")
+    return [{"guid": str(r["guid"] or ""),
+             "username": str(r["username"] or ""),
+             "is_admin": bool(int(r["is_admin"] or 0))} for r in rows]
+
+
+def online_policy():
+    """返回 (可见范围, 允许的用户名/guid 集合)。文件改动后最多 2 秒生效。"""
+    now = time.time()
+    if now - _POLICY_CACHE["ts"] < 2.0:
+        return _POLICY_CACHE["vis"], _POLICY_CACHE["users"]
+    cfg = load_config()
+    vis = str(cfg.get("online_visibility") or "admin").strip().lower()
+    if vis not in ("all", "admin", "users"):
+        vis = "admin"
+    raw = cfg.get("online_users") or []
+    if not isinstance(raw, list):
+        raw = []
+    users = {str(x).strip().lower() for x in raw if str(x).strip()}
+    _POLICY_CACHE.update({"ts": now, "vis": vis, "users": users})
+    return vis, users
+
+
+def online_allowed(user):
+    """这个用户能不能看到在线源。没有登录信息时，只有 all 模式放行。"""
+    vis, allowed = online_policy()
+    if vis == "all":
+        return True
+    if not user:
+        return False
+    if vis == "admin":
+        return bool(user.get("is_admin"))
+    if user.get("is_admin"):
+        return True
+    name = str(user.get("username") or "").strip().lower()
+    guid = str(user.get("guid") or "").strip().lower()
+    return bool(name and name in allowed) or bool(guid and guid in allowed)
+
+
+def public_config():
+    """给配置页的配置副本：绝不把 write_token 发回浏览器。"""
+    cfg = load_config()
+    cfg.pop("write_token", None)
+    return cfg
+
+
+def visibility_payload():
+    """配置页需要的可见范围 + 用户列表。"""
+    vis, _ = online_policy()
+    cfg = load_config()
+    selected = cfg.get("online_users") or []
+    if not isinstance(selected, list):
+        selected = []
+    return {"online_visibility": vis,
+            "online_users": [str(x) for x in selected if str(x).strip()],
+            "users": media_users()}
 
 
 def _env_write_any():
@@ -3095,12 +3388,34 @@ async def handle_request(reader, writer, head, headers, body):
             ok, msg = save_sources(req.get("primary") or [],
                                    req.get("fallback") or [],
                                    req.get("js") or [])
+            patch = {}
+            if "online_visibility" in req:
+                vis = str(req.get("online_visibility") or "").strip().lower()
+                if vis in ("all", "admin", "users"):
+                    patch["online_visibility"] = vis
+                else:
+                    ok = False
+                    msg += "；可见范围不合法"
+            if "online_users" in req:
+                v = req.get("online_users") or []
+                if not isinstance(v, list):
+                    v = [v]
+                patch["online_users"] = [str(x).strip() for x in v
+                                         if str(x).strip()]
+            if patch:
+                ok2, msg2 = save_config(patch)
+                if not ok2:
+                    ok = False
+                    msg += "；" + msg2
+                elif ok:
+                    msg += "；可见范围已保存"
             writer.write(json_response({"ok": ok, "msg": msg,
                                         "file": SOURCES_FILE,
                                         "origin": SOURCES_ORIGIN,
                                         "primary": CMS_PRIMARY,
                                         "fallback": CMS_FALLBACK,
-                                        "js": JS_SITES},
+                                        "js": JS_SITES,
+                                        **visibility_payload()},
                                        extra=ensure_cookie(headers)))
         elif path == "/v/__mitm__/api/sources":
             writer.write(json_response({"ok": True, "msg": _SOURCES_MSG,
@@ -3111,7 +3426,11 @@ async def handle_request(reader, writer, head, headers, body):
                                         "js": JS_SITES,
                                         "write": write_state(headers),
                                         "engine": jsspider.info() if jsspider else
-                                                  {"available": False, "why": _JS_ERR}},
+                                                  {"available": False, "why": _JS_ERR},
+                                        **visibility_payload()},
+                                       extra=ensure_cookie(headers)))
+        elif path == "/v/__mitm__/api/users":
+            writer.write(json_response({"ok": True, **visibility_payload()},
                                        extra=ensure_cookie(headers)))
         elif path == "/v/__mitm__/api/config" and method == "POST":
             req = _json_body(body)
@@ -3121,6 +3440,15 @@ async def handle_request(reader, writer, head, headers, body):
             if "write_allow_ip" in req:
                 v = req.get("write_allow_ip") or []
                 patch["write_allow_ip"] = v if isinstance(v, list) else [v]
+            if "online_visibility" in req:
+                vis = str(req.get("online_visibility") or "").strip().lower()
+                if vis in ("all", "admin", "users"):
+                    patch["online_visibility"] = vis
+            if "online_users" in req:
+                v = req.get("online_users") or []
+                patch["online_users"] = ([str(x).strip() for x in v
+                                          if str(x).strip()]
+                                         if isinstance(v, list) else [str(v).strip()])
             # 便捷写法：把「当前请求的来源 IP」直接加进白名单
             if req.get("add_ip"):
                 cfg = load_config()
@@ -3131,11 +3459,13 @@ async def handle_request(reader, writer, head, headers, body):
                 patch["write_allow_ip"] = lst
             ok, msg = save_config(patch) if patch else (True, "没给要改的字段")
             writer.write(json_response({"ok": ok, "msg": msg,
-                                        "config": load_config(),
+                                        "config": public_config(),
+                                        **visibility_payload(),
                                         **write_state(headers)},
                                        extra=ensure_cookie(headers)))
         elif path == "/v/__mitm__/api/config":
-            writer.write(json_response({"ok": True, "config": load_config(),
+            writer.write(json_response({"ok": True, "config": public_config(),
+                                        **visibility_payload(),
                                         **write_state(headers)},
                                        extra=ensure_cookie(headers)))
         elif path == "/v/__mitm__/api/import" and method == "POST":
@@ -3166,8 +3496,19 @@ async def handle_request(reader, writer, head, headers, body):
     if not path.startswith("/v/media/"):
         log(method, path, f"[on:{g or body_guid}]" if (g or body_guid) else "")
 
+    # 当前请求是谁 + 在线源是否对他可见。用户/策略都有短缓存，本地分片请求
+    # 也只是两次内存命中，不会每次都读数据库或配置文件。
+    need_ctx = (path.startswith("/v/api/v1/") or path.startswith("/v/media/"))
+    req_user = request_user(headers) if need_ctx else None
+    allow_online = online_allowed(req_user) if need_ctx else True
+
     # ---- 1) 搜索合并 ----
     if path == "/v/api/v1/search/list":
+        if not allow_online:
+            raw = await forward(head, headers, body)
+            writer.write(raw)
+            await writer.drain()
+            return
         kw = (query.get("q") or [""])[0]
         online_t = asyncio.create_task(online_search(kw)) if kw else None
         raw = await forward(head, headers, body)
@@ -3224,6 +3565,11 @@ async def handle_request(reader, writer, head, headers, body):
     if path.startswith("/v/api/v1/media/"):
         path = "/v/media/" + path[len("/v/api/v1/media/"):]
     if path.startswith("/v/media/"):
+        if path.startswith("/v/media/online/") and not allow_online:
+            await write_head(writer, 404, {"Content-Length": 0,
+                                           "Connection": "close"})
+            writer.close()
+            return
         if not path.startswith("/v/media/online/"):
             # 本地库影片流的取流请求（原先完全不记日志，导致排查时“看不见”）
             log("MEDIA-REQ", method, path[:60],
@@ -3283,6 +3629,11 @@ async def handle_request(reader, writer, head, headers, body):
             _local_pl = ((_pp.path or "").startswith("/v/")
                          or (_pp.hostname or "") in ("127.0.0.1", "localhost",
                                                      "::1", "0.0.0.0"))
+            if resolve_guid(pl) and not allow_online:
+                await write_head(writer, 404, {"Content-Length": 0,
+                                               "Connection": "close"})
+                writer.close()
+                return
             if resolve_guid(pl) or not _local_pl:
                 if not await proxy_media(pl, urllib.parse.unquote(
                         (query.get("r") or [""])[0]), headers, writer):
@@ -3301,6 +3652,11 @@ async def handle_request(reader, writer, head, headers, body):
             if not ep:
                 ep = int((pl_q.get("ep") or ["0"])[0] or 0)
         if g2 and g2 in registry:
+            if not allow_online:
+                await write_head(writer, 404, {"Content-Length": 0,
+                                               "Connection": "close"})
+                writer.close()
+                return
             await serve_manifest(g2, ep, headers, writer, line)
             return
         # 其余（本地影片流）原样转发
@@ -3308,7 +3664,7 @@ async def handle_request(reader, writer, head, headers, body):
         return
 
     # ---- 3) 豆瓣热播 伪媒体库 ----
-    if method == "GET" and path.startswith("/v/api/v1/mdb/"):
+    if allow_online and method == "GET" and path.startswith("/v/api/v1/mdb/"):
         lg = path[len("/v/api/v1/mdb/"):]
         for ck, g in LIB_GUIDS.items():
             if lg == g:
@@ -3318,7 +3674,7 @@ async def handle_request(reader, writer, head, headers, body):
                                             "data": fake_mdb_info(ck)}))
                 await writer.drain()
                 return
-    if path == "/v/api/v1/item/list" and body:
+    if allow_online and path == "/v/api/v1/item/list" and body:
         try:
             bj = json.loads(body.decode("utf-8", "replace"))
         except Exception:
@@ -3351,6 +3707,11 @@ async def handle_request(reader, writer, head, headers, body):
             await writer.drain()
             return
     if path == "/v/api/v1/mediadb/list":
+        if not allow_online:
+            raw = await forward(head, headers, body)
+            writer.write(raw)
+            await writer.drain()
+            return
         raw = await forward(head, headers, body)
         _, body_b = split_response(raw)
         try:
@@ -3376,6 +3737,11 @@ async def handle_request(reader, writer, head, headers, body):
         await writer.drain()
         return
     if path == "/v/api/v1/mediadb/sum":
+        if not allow_online:
+            raw = await forward(head, headers, body)
+            writer.write(raw)
+            await writer.drain()
+            return
         raw = await forward(head, headers, body)
         _, body_b = split_response(raw)
         try:
@@ -3401,7 +3767,7 @@ async def handle_request(reader, writer, head, headers, body):
     # ---- 4) 在线条目相关接口 ----
     # 4a) 伪媒体库 guid：前端进入豆瓣分类库详情页时会请求它
     raw_g = GUID_RE.search(path)
-    if raw_g and raw_g.group(0) in ALL_LIB_GUIDS:
+    if allow_online and raw_g and raw_g.group(0) in ALL_LIB_GUIDS:
         lg = raw_g.group(0)
         ck = lib_key_of_guid(lg)
         if ck is None:                      # 旧单库 → 默认取热门电影
@@ -3415,46 +3781,135 @@ async def handle_request(reader, writer, head, headers, body):
             return
 
     # ---- 观看记录 / 继续播放 ----
-    # 官方后端 POST /play/list 返回 501 Not Implemented，
-    # 不接管的话侧栏「继续播放」永远是空的。
+    # 关键：本地影片的 play/record、play/quit、play/list 必须原样交给官方。
+    # 旧版把这三个接口全拦了，本地进度写不进 item_user_play，症状就是
+    # 「本地 NAS 电影的播放记录 / 继续播放不显示了」。
     if path.startswith("/v/api/v1/play/list"):
-        items = watch_list()
-        writer.write(json_response({"msg": "", "code": 0,
-                                    "data": items}))
+        raw = await forward(head, headers, body)
+        rhead, rbody = split_response(raw)
+        status = _http_status(rhead)
+        try:
+            j = json.loads(rbody.decode("utf-8", "replace"))
+        except Exception:
+            j = None
+        online = watch_list(req_user) if allow_online else []
+        # 官方明确返回 501（接口未实现）或根本不是 JSON 时，本地列表拿不到，
+        # 至少把在线列表还给前端；但 401/403 等登录/鉴权错误必须原样透传，
+        # 不能用一个「看起来成功」的在线列表把登录问题盖掉。
+        if status == 501:
+            writer.write(json_response({"msg": "", "code": 0, "data": online}))
+            await writer.drain()
+            log("play/list: 官方 501，退化为在线 %d 条" % len(online))
+            return
+        if status in (401, 403):
+            writer.write(raw)
+            await writer.drain()
+            log("play/list: 官方 HTTP %s，原样透传" % status)
+            return
+        if not isinstance(j, dict):
+            writer.write(json_response({"msg": "", "code": 0, "data": online}))
+            await writer.drain()
+            log("play/list: 官方无 JSON（status=%s），在线 %d 条"
+                % (status, len(online)))
+            return
+        if j.get("code") != 0:
+            # 官方明确报错（未登录 / 签名错 / 其它业务错误）时原样透传
+            writer.write(raw)
+            await writer.drain()
+            log("play/list: 官方 code=%s，原样透传" % j.get("code"))
+            return
+        if status >= 400:
+            writer.write(raw)
+            await writer.drain()
+            log("play/list: 官方 HTTP %s，原样透传" % status)
+            return
+        data = j.get("data")
+        local_n = 0
+        if isinstance(data, list):
+            local_n = len(data)
+            j["data"] = _merge_play_items(data, online)
+        elif isinstance(data, dict) and isinstance(data.get("list"), list):
+            local_n = len(data["list"])
+            data["list"] = _merge_play_items(data["list"], online)
+            if "total" in data:
+                data["total"] = len(data["list"])
+            j["data"] = data
+        else:
+            j["data"] = online if allow_online else data
+        writer.write(json_response(j))
         await writer.drain()
-        log(f"play/list -> {len(items)} 条")
+        log("play/list: 官方本地 %d + 在线 %d -> %d 条"
+            % (local_n, len(online),
+               len(j["data"]) if isinstance(j.get("data"), list)
+               else len(j["data"].get("list", []))
+               if isinstance(j.get("data"), dict) else 0))
         return
     if path.startswith("/v/api/v1/play/record"):
-        # 注意：不能引用 gg —— 它在本块之后才赋值，引用会抛 UnboundLocalError
-        gid = (body_guid or g or "")
-        if method == "DELETE":
-            watch.pop(gid, None)
-            save_watch()
-            log("play/record 删除:", gid)
-        else:
-            try:
-                pd = json.loads(body.decode("utf-8", "replace")) or {}
-            except Exception:
-                pd = {}
-            gid = pd.get("item_guid") or gid
-            pos = pd.get("ts") or pd.get("position") or 0
-            if gid in registry:
-                note_watch(gid, pos, {"title": registry[gid].get("title", "")})
-                log(f"play/record: {(registry[gid].get('title') or '')[:16]} "
-                    f"{int(float(pos or 0))}s")
+        pd = _play_body(body)
+        gid = _play_gid(pd, body_guid, g)
+        main_gid = _play_main_guid(gid)
+        if main_gid:
+            if not allow_online:
+                writer.write(json_response(
+                    {"msg": "在线源未对该用户开放", "code": 403, "data": None},
+                    status=403))
+                await writer.drain()
+                return
+            if method == "DELETE":
+                remove_watch(main_gid, req_user)
+                log("play/record 删除:", main_gid)
             else:
-                log("play/record: 未知 guid", gid)
-        writer.write(json_response({"msg": "", "code": 0, "data": None}))
+                pos = pd.get("ts")
+                if pos is None:
+                    pos = pd.get("position") or 0
+                note_watch(main_gid, pos,
+                           {"title": registry[main_gid].get("title", "")},
+                           user=req_user)
+                try:
+                    pos_s = int(float(pos or 0))
+                except Exception:
+                    pos_s = 0
+                log(f"play/record: {(registry[main_gid].get('title') or '')[:16]} "
+                    f"{pos_s}s")
+            writer.write(json_response({"msg": "", "code": 0, "data": None}))
+            await writer.drain()
+            return
+        # 本地 / 未知 guid：原样转发，让官方写 item_user_play / 删除记录
+        raw = await forward(head, headers, body)
+        writer.write(raw)
         await writer.drain()
+        log("play/record 本地转发:", method, (gid or "-")[:18])
         return
     if path == "/v/api/v1/play/quit":
-        # 退出播放：不再续记，但保留已记录的进度供「继续播放」使用
-        writer.write(json_response({"msg": "", "code": 0, "data": None}))
+        pd = _play_body(body)
+        gid = _play_gid(pd, body_guid, g)
+        main_gid = _play_main_guid(gid)
+        if main_gid:
+            if not allow_online:
+                writer.write(json_response(
+                    {"msg": "在线源未对该用户开放", "code": 403, "data": None},
+                    status=403))
+                await writer.drain()
+                return
+            # 在线：退出播放不再续记，但保留已记录的进度供「继续播放」使用
+            writer.write(json_response({"msg": "", "code": 0, "data": None}))
+            await writer.drain()
+            return
+        # 本地：必须交给官方，否则播放会话/进度收尾不完整
+        raw = await forward(head, headers, body)
+        writer.write(raw)
         await writer.drain()
+        log("play/quit 本地转发:", method, (gid or "-")[:18])
         return
 
     gg = g or (body_guid if body_guid in registry else None)
     if gg and isinstance(registry.get(gg), dict):
+        if not allow_online:
+            writer.write(json_response(
+                {"msg": "在线源未对该用户开放", "code": 403, "data": None},
+                status=403))
+            await writer.drain()
+            return
         rec = registry[gg]
         if path.startswith("/v/api/v1/item/") and not path.endswith("/list"):
             if method == "DELETE":

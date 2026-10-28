@@ -65,6 +65,9 @@ function fetch(path, opt){
 }
 __routes["/v/__mitm__/api/sources"] = {
   ok:true, msg:"", primary:[], fallback:[], js:[],
+  online_visibility:"users", online_users:["family"],
+  users:[{guid:"g-admin", username:"admin", is_admin:true},
+         {guid:"g-family", username:"family", is_admin:false}],
   write:{allowed:true, ip:"10.99.99.5", why:"内网 / 叠加网地址", allow_any:false,
          auto_trust_first:true, first_trusted:false, browser_bound:false,
          token_set:false, config_file:"/tmp/conf/config.json"},
@@ -144,6 +147,20 @@ ck((E("log").textContent || "").indexOf("点「保存并测速」生效") >= 0,
 
 ck(!!E("btnSave").onclick, "「保存并测速」按钮有绑定处理函数");
 ck(!!E("btnTest").onclick, "「只测速不保存」按钮有绑定处理函数");
+
+// 7) 在线源可见范围 UI
+ck(E("visMode").value === "users", "可见范围模式回填 = users");
+ck((E("visTag").textContent || "").indexOf("已选") >= 0,
+   "可见范围标签显示已选账号数：" + (E("visTag").textContent || ""));
+ck((E("userBox").innerHTML || "").indexOf("family") >= 0,
+   "指定用户模式下渲染了 family 勾选框");
+ck((E("userBox").innerHTML || "").indexOf("管理员") >= 0,
+   "管理员账号带「管理员」标记");
+var hadFamily = S.ALLOW.indexOf("family") >= 0;
+toggleUser(1);
+ck((S.ALLOW.indexOf("family") >= 0) !== hadFamily, "点 family 勾选框会切换选择");
+toggleUser(1);
+ck((S.ALLOW.indexOf("family") >= 0) === hadFamily, "再点一次恢复原选择");
 
 __out.join("\n");
 """
