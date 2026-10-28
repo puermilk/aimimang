@@ -35,9 +35,10 @@
     "js": "仅 JS 源用：站点规则文件地址（TVBox 配置里的 ext）"
   },
   "_levels": {
-    "primary": "主用：逐个查询，按标题匹配度评分，取最高分",
-    "fallback": "兜底：仅当 primary 全部落空时才查（慢，但收录面不同）",
-    "js": "drpy JS 蜘蛛：由内置引擎直接执行站点规则，与采集源一起参与搜索"
+    "primary": "主用：按顺序查询，按标题匹配度评分；priority 下命中即停",
+    "fallback": "兜底：priority 下仅当主用全部落空才查；parallel 下与主用一起查",
+    "js": "drpy JS 蜘蛛：由内置引擎直接执行站点规则，与采集源一起参与搜索",
+    "mode": "查询方式在 conf/config.json 的 source_mode（priority/parallel）；source_limit 控制最多启用几个采集源（0=不限）"
   },
   "_example_不生效_照抄时请放到_primary_或_fallback_里": {
     "name": "例子源",

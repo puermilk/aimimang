@@ -68,6 +68,7 @@ __routes["/v/__mitm__/api/sources"] = {
   online_visibility:"users", online_users:["family"],
   users:[{guid:"g-admin", username:"admin", is_admin:true},
          {guid:"g-family", username:"family", is_admin:false}],
+  source_mode:"parallel", source_limit:6, js_source_limit:2,
   write:{allowed:true, ip:"10.99.99.5", why:"内网 / 叠加网地址", allow_any:false,
          auto_trust_first:true, first_trusted:false, browser_bound:false,
          token_set:false, config_file:"/tmp/conf/config.json"},
@@ -161,6 +162,20 @@ toggleUser(1);
 ck((S.ALLOW.indexOf("family") >= 0) !== hadFamily, "点 family 勾选框会切换选择");
 toggleUser(1);
 ck((S.ALLOW.indexOf("family") >= 0) === hadFamily, "再点一次恢复原选择");
+
+// 8) 查询方式 / 启用数量 UI
+ck(E("srcMode").value === "parallel", "查询方式回填 = parallel");
+ck(E("srcLimit").value === 6, "采集源上限回填 = 6");
+ck(E("jsLimit").value === 2, "JS 源上限回填 = 2");
+ck((E("srcPolicyMsg").textContent || "").indexOf("一起查询") >= 0,
+   "全部同时的说明文案已显示");
+E("srcMode").onchange.call({value:"priority"});
+ck(S.MODE === "priority", "切换查询方式会更新 S.MODE");
+ck((E("srcPolicyMsg").textContent || "").indexOf("先查主用") >= 0,
+   "主用优先的说明文案已显示");
+E("srcLimit").oninput.call({value:"9"});
+E("jsLimit").oninput.call({value:"3"});
+ck(S.LIMIT === 9 && S.JLIMIT === 3, "数量输入会更新 S.LIMIT / S.JLIMIT");
 
 __out.join("\n");
 """

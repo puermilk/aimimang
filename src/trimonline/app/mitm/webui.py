@@ -423,8 +423,10 @@ def test_sites(sites, keyword="凡人", timeout=25.0, workers=6):
     return out
 
 
-def recommend(results):
-    """按「可放线路数优先、响应时间其次」挑出主用 / 兜底。JS 源单独一组。"""
+def recommend(results, cms_limit=0, js_limit=4, mode="priority"):
+    """按「可放线路数优先、响应时间其次」挑出建议启用的源。
+    cms_limit=0 时推荐 4 个采集源（旧默认）；>0 时按用户设置的数量推荐。
+    js_limit=0 表示 JS 源不限。"""
     ok = [r for r in results if (r.get("playable") or 0) > 0]
     dead = [r for r in results if not (r.get("playable") or 0)]
     is_js = lambda r: bool(r.get("js") or r.get("kind") == "js")   # noqa: E731
@@ -436,12 +438,20 @@ def recommend(results):
     ok.sort(key=rank)
     cms_ok = [r for r in ok if not is_js(r)]
     js_ok = [r for r in ok if is_js(r)]
-    primary = cms_ok[:2]
-    fallback = cms_ok[2:4]
+    n = cms_limit if cms_limit > 0 else 4
+    chosen = cms_ok[:n]
+    half = (len(chosen) + 1) // 2
+    primary = chosen[:half]
+    fallback = chosen[half:]
+    js_chosen = js_ok if js_limit <= 0 else js_ok[:js_limit]
+    for r in cms_ok + js_ok:
+        r["suggest"] = ""
     for r in primary:
         r["suggest"] = "primary"
     for r in fallback:
         r["suggest"] = "fallback"
+    for r in js_chosen:
+        r["suggest"] = "js"
     for r in dead:
         r["suggest"] = ""
 
@@ -463,17 +473,24 @@ def recommend(results):
             text = "主用：（无）"
         if fallback:
             text += "\n兜底：" + "、".join(tag(r) for r in fallback)
-        if js_ok:
-            text += "\nJS 源：" + "、".join(tag(r) for r in js_ok)
-        text += ("\n\n说明：主用按顺序查，命中即用；只有主用全部落空才轮到底源。"
-                 "多线路的源更抗单条线路失效，所以同等速度下优先当主用。"
-                 "JS 源与采集源并行查询，慢一些但收录面完全不同。")
+        if js_chosen:
+            text += "\nJS 源：" + "、".join(tag(r) for r in js_chosen)
+        if mode == "parallel":
+            text += ("\n\n说明：当前是「全部同时」——主用和兜底会一起查询，结果合并，"
+                     "不再等主用落空才查兜底。源越多越慢，建议按实际需要设置数量。")
+        else:
+            text += ("\n\n说明：主用按顺序查，命中即用；只有主用全部落空才轮到底源。"
+                     "多线路的源更抗单条线路失效，所以同等速度下优先当主用。")
+        text += "JS 源与采集源并行查询，慢一些但收录面完全不同。"
     return {"primary": [r["name"] for r in primary],
             "fallback": [r["name"] for r in fallback],
-            "js": [r["name"] for r in js_ok],
+            "js": [r["name"] for r in js_chosen],
             "text": text,
             "usable": len(ok),
-            "dead": len(dead)}
+            "dead": len(dead),
+            "source_mode": mode,
+            "source_limit": cms_limit,
+            "js_source_limit": js_limit}
 
 
 def detect_lines(r):
@@ -583,6 +600,29 @@ pre{background:#0d1117;border:1px solid var(--line);border-radius:8px;
 </div>
 
 <div class="card">
+  <h2>查询方式与启用数量</h2>
+  <div class="sub" style="margin:-6px 0 10px;font-size:12.5px">
+    「主用优先」是旧行为：先查主用，主用有结果就不查兜底。
+    「全部同时」会把主用 + 兜底一起查，所有启用的源都参与搜索和换源；
+    源越多覆盖越广，但搜索也会更慢，按实际需要限制数量即可。
+  </div>
+  <div class="row">
+    <span style="color:var(--dim)">查询方式</span>
+    <select id="srcMode" style="width:250px">
+      <option value="priority">主用优先（旧行为）</option>
+      <option value="parallel">全部同时（推荐，所有启用的源一起查）</option>
+    </select>
+    <span style="color:var(--dim)">采集源最多启用</span>
+    <input id="srcLimit" type="number" min="0" max="100" value="0" style="width:80px">
+    <span style="color:var(--dim)">个（0=不限）</span>
+    <span style="color:var(--dim)">JS 源最多</span>
+    <input id="jsLimit" type="number" min="0" max="50" value="4" style="width:70px">
+    <span style="color:var(--dim)">个（0=不限）</span>
+  </div>
+  <div id="srcPolicyMsg" class="sub" style="margin:8px 0 0;font-size:12px"></div>
+</div>
+
+<div class="card">
   <h2>在线源可见范围（按飞牛影视账号）</h2>
   <div class="sub" style="margin:-6px 0 10px;font-size:12.5px">
     只影响<b>在线源</b>：搜索结果、豆瓣伪库、在线影片的「继续播放」。
@@ -641,7 +681,8 @@ pre{background:#0d1117;border:1px solid var(--line);border-radius:8px;
 </div>
 
 <script>
-var S = {primary:[], fallback:[], js:[], VIS:"admin", ALLOW:[], USERS:[]};
+var S = {primary:[], fallback:[], js:[], VIS:"admin", ALLOW:[], USERS:[],
+         MODE:"priority", LIMIT:0, JLIMIT:4};
 var LAST = null;
 var UNLOCK_CMD = "curl -s --unix-socket /var/run/trim_media.sock -X POST " +
   "-H 'Content-Type: application/json' " +
@@ -747,6 +788,7 @@ function draw(){
   renderTable("primary", "tblPrimary");
   renderTable("fallback", "tblFallback");
   renderJsTable();
+  renderSourcePolicy();
   document.getElementById("cli").textContent =
     "# 看当前生效的源\n" +
     "curl -s --unix-socket /var/run/trim_media.sock http://x/v/__mitm__/sources\n\n" +
@@ -761,6 +803,28 @@ function draw(){
     "curl -s --unix-socket /var/run/trim_media.sock http://x/v/__mitm__/api/config\n" +
     "cat /usr/local/trim_media_mitm/conf/config.json";
   renderVis();
+}
+
+function renderSourcePolicy(){
+  var m = document.getElementById("srcMode");
+  if (!m) return;
+  m.value = S.MODE || "priority";
+  var sl = document.getElementById("srcLimit");
+  var jl = document.getElementById("jsLimit");
+  if (sl) sl.value = (S.LIMIT === 0 ? 0 : (S.LIMIT || 0));
+  if (jl) jl.value = (S.JLIMIT === 0 ? 0 : (S.JLIMIT || 0));
+  var msg = document.getElementById("srcPolicyMsg");
+  if (msg){
+    if ((S.MODE || "priority") === "parallel"){
+      msg.textContent = "主用和兜底会一起查询；采集源上限 " +
+        (S.LIMIT > 0 ? (S.LIMIT + " 个") : "不限") +
+        "，JS 源上限 " + (S.JLIMIT > 0 ? (S.JLIMIT + " 个") : "不限") + "。";
+    } else {
+      msg.textContent = "先查主用，主用有结果就停；主用全部落空才查兜底。" +
+        "采集源上限 " + (S.LIMIT > 0 ? (S.LIMIT + " 个") : "不限") +
+        "，JS 源上限 " + (S.JLIMIT > 0 ? (S.JLIMIT + " 个") : "不限") + "。";
+    }
+  }
 }
 
 function renderVis(){
@@ -900,6 +964,9 @@ function load(){
     S.VIS = d.online_visibility || "admin";
     S.ALLOW = (d.online_users||[]).slice();
     S.USERS = (d.users||[]).slice();
+    S.MODE = d.source_mode || "priority";
+    S.LIMIT = (d.source_limit === undefined ? 0 : d.source_limit);
+    S.JLIMIT = (d.js_source_limit === undefined ? 4 : d.js_source_limit);
     if (d.file) document.getElementById("file").textContent = d.file;
     if (d.write) drawWrite(d.write);
     if (d.msg) log(d.msg);
@@ -920,6 +987,17 @@ function blankJs(){ return {name:"", js:"", referer:"", lines:"auto"}; }
 document.getElementById("visMode").onchange = function(){
   S.VIS = this.value;
   renderVis();
+};
+
+document.getElementById("srcMode").onchange = function(){
+  S.MODE = this.value;
+  renderSourcePolicy();
+};
+document.getElementById("srcLimit").oninput = function(){
+  S.LIMIT = Math.max(0, Math.min(100, parseInt(this.value, 10) || 0));
+};
+document.getElementById("jsLimit").oninput = function(){
+  S.JLIMIT = Math.max(0, Math.min(50, parseInt(this.value, 10) || 0));
 };
 
 document.getElementById("btnAddP").onclick = function(){ S.primary.push(blank()); draw(); };
@@ -949,11 +1027,16 @@ document.getElementById("btnAllowAny").onclick = function(){
 document.getElementById("btnSave").onclick = function(){
   var btn = this; btn.disabled = true; log("保存中…");
   api("/v/__mitm__/api/sources", {primary:S.primary, fallback:S.fallback, js:S.js,
-                                  online_visibility:S.VIS, online_users:S.ALLOW})
+                                  online_visibility:S.VIS, online_users:S.ALLOW,
+                                  source_mode:S.MODE, source_limit:S.LIMIT,
+                                  js_source_limit:S.JLIMIT})
     .then(function(d){
       if (d.online_visibility) S.VIS = d.online_visibility;
       if (d.online_users) S.ALLOW = d.online_users.slice();
       if (d.users) S.USERS = d.users.slice();
+      if (d.source_mode) S.MODE = d.source_mode;
+      if (d.source_limit !== undefined) S.LIMIT = d.source_limit;
+      if (d.js_source_limit !== undefined) S.JLIMIT = d.js_source_limit;
       draw();
       log("保存成功：" + (d.msg||""));
       return runTest();
@@ -984,7 +1067,9 @@ function runTest(){
   var to = parseFloat(document.getElementById("to").value) || 25;
   log("正在测速（" + sites.length + " 个源，关键词「" + kw + "」）…" +
       "  JS 源首次要下载规则并启动引擎，会慢一些。");
-  return api("/v/__mitm__/api/test", {sites:sites, keyword:kw, timeout:to})
+  return api("/v/__mitm__/api/test", {sites:sites, keyword:kw, timeout:to,
+                                       source_mode:S.MODE, source_limit:S.LIMIT,
+                                       js_source_limit:S.JLIMIT})
     .then(function(d){
       LAST = d.results || [];
       renderTest(d);
@@ -1054,14 +1139,15 @@ function applyRec(){
     var lines = (r.lines==="single"||r.lines==="multi") ? r.lines
               : ((r.routes||0)>1 ? "multi" : "single");
     if (r.kind === "js" || r.js){
-      if ((r.playable||0) > 0){
+      if (r.suggest === "js" && (r.playable||0) > 0){
         j.push({name:r.name, js:r.js, referer:r.referer||"", lines:lines});
       }
       return;
     }
-    if ((r.playable||0) > 0){
+    if ((r.playable||0) > 0 &&
+        (r.suggest === "primary" || r.suggest === "fallback")){
       var s = {name:r.name, api:r.api, referer:r.referer||"", lines:lines};
-      (r.suggest==="primary" ? p : (r.suggest==="fallback" ? f : f)).push(s);
+      (r.suggest === "primary" ? p : f).push(s);
     }
   });
   S.primary = p; S.fallback = f; S.js = j;

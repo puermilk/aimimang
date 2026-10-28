@@ -151,8 +151,14 @@ sys.path.insert(0, "$SB")
 import mitm
 tpl = json.load(open("/root/fpk/src/trimonline/app/mitm/conf/config.json"))
 dft = mitm.DEFAULT_CONFIG
-print("  ✓ 模板与默认值一致" if tpl == dft else "  ✗ 不一致:\n    模板=%s\n    默认=%s" % (
-      json.dumps(tpl, ensure_ascii=False), json.dumps(dft, ensure_ascii=False)))
+# 新装模板默认「全部同时」；旧配置缺字段时按 DEFAULT_CONFIG 的「主用优先」走。
+diff = {k for k in set(tpl) | set(dft) if tpl.get(k) != dft.get(k)}
+ok = (diff == {"source_mode"} and tpl.get("source_mode") == "parallel"
+      and dft.get("source_mode") == "priority")
+print("  ✓ 模板与默认值一致（仅新装 source_mode=parallel）" if ok else
+      "  ✗ 不一致（差异=%s）:\n    模板=%s\n    默认=%s" % (
+          sorted(diff), json.dumps(tpl, ensure_ascii=False),
+          json.dumps(dft, ensure_ascii=False)))
 PY
 
 echo

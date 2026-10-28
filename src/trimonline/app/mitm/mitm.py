@@ -98,8 +98,9 @@ UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
 #           （只影响配置页的分组与推荐排序，不影响播放逻辑）
 #
 # 两级含义：
-#   primary  —— 主用：逐个查询，按标题匹配度评分，取最高分
-#   fallback —— 兜底：仅当 primary 全部落空时才查（慢，但收录面不同）
+#   primary  —— 主用：按顺序查询，按标题匹配度评分；priority 下命中即停
+#   fallback —— 兜底：priority 下仅当主用全部落空才查；parallel 下与主用一起查
+#   查询方式见 conf/config.json 的 source_mode；source_limit 控制最多启用几个源。
 CONF_DIR = "/usr/local/trim_media_mitm/conf"
 SOURCES_FILE = os.path.join(CONF_DIR, "sources.json")
 CONFIG_FILE = os.path.join(CONF_DIR, "config.json")
@@ -123,8 +124,10 @@ SOURCE_HELP = [
     "  热加载  curl -s --unix-socket /var/run/trim_media.sock 'http://x/v/__mitm__/sources?reload=1'",
     "  测速    python3 /usr/local/trim_media_mitm/source_check.py --keyword 凡人",
     "",
-    "primary  = 主用：逐个查询，按标题匹配度评分，取最高分",
-    "fallback = 兜底：仅当 primary 全部落空时才查（慢，但收录面不同）",
+    "primary  = 主用：按顺序查询，按标题匹配度评分；priority 下命中即停",
+    "fallback = 兜底：priority 下仅当主用全部落空才查；parallel 下与主用一起查",
+    "查询方式在 conf/config.json 的 source_mode（priority/parallel）；",
+    "source_limit = 最多启用几个采集源（0=不限，按主用→兜底顺序取前 N 个）",
     "字段：name 名称（同时作为同源去重键）、api 采集接口、",
     "      referer 可选（缺省按 api 域名推导）、lines 可选 single/multi/auto",
     "采集站必须支持标准接口：<api>?ac=videolist&wd=关键词 与 <api>?ac=detail&ids=",
@@ -795,9 +798,11 @@ async def js_query(site, kw, limit=3):
 
 
 async def js_search_all(kw, cap=4, timeout=12.0):
-    """并行查所有 JS 源（限 cap 个），整体超时保护。
+    """并行查所有 JS 源（限 cap 个；cap<=0 表示不限），整体超时保护。
     注意：超时只是「不等了」，被丢下的线程还会把这次请求跑完，属正常现象。"""
-    sites = [s for s in JS_SITES if s.get("kind") == "js"][:cap]
+    sites = [s for s in JS_SITES if s.get("kind") == "js"]
+    if cap and cap > 0:
+        sites = sites[:cap]
     if not sites or jsspider is None:
         return []
     tasks = [asyncio.ensure_future(js_query(s, kw)) for s in sites]
@@ -864,10 +869,12 @@ async def online_search(kw):
     if not kw:
         return []
     sem = asyncio.Semaphore(4)
+    mode, p_sites, f_sites, js_limit = cms_plan()
+    levels = [p_sites + f_sites] if mode == "parallel" else [p_sites, f_sites]
 
     async def cms_all():
         got = []
-        for level in (CMS_PRIMARY, CMS_FALLBACK):
+        for level in levels:
             tasks = [query_site(s, kw, sem) for s in level]
             res = await asyncio.gather(*tasks, return_exceptions=True)
             for r in res:
@@ -875,12 +882,13 @@ async def online_search(kw):
                     log("online search err:", repr(r)[:160])
                     continue
                 got.extend(r)
-            if got:
+            if got and mode == "priority":
                 break                      # 主用站有结果就不再等兜底站
         return got
 
     cms_task = asyncio.ensure_future(cms_all())
-    js_task = asyncio.ensure_future(js_search_all(kw)) if JS_SITES else None
+    js_task = (asyncio.ensure_future(js_search_all(kw, cap=js_limit))
+               if JS_SITES else None)
     cms_items = await cms_task
 
     js_items = []
@@ -897,25 +905,52 @@ async def online_search(kw):
             js_task.add_done_callback(_swallow)
             log("JS 源未在 %.1fs 内返回，本次先不等" % wait_s)
 
-    # 合并去重：CMS 在前，JS 源至少留 2 个名额
-    items, seen = [], set()
-    for it in list(cms_items[:6]) + list(js_items[:4]):
-        key = _norm_title(it.get("title") or "")
-        if key and key in seen:
-            continue
-        seen.add(key)
-        items.append(it)
-    items = items[:8]
+    # 合并去重：按来源轮流取，避免第一个源就把 8 个名额占满。
+    items = _merge_online_items(cms_items, js_items, 8)
     if items:
         save_registry()
         log(f"online search '{kw}' -> {len(items)} 条"
-            f"（CMS {len(cms_items)} / JS {len(js_items)}）")
+            f"（{mode}，CMS {len(cms_items)} / JS {len(js_items)}）")
     return items
 
 
 # --------------------------------------------------- 标题解析 / 播放源解析 ---
 def _norm_title(s):
     return re.sub(r"[\s\-—:：·\.（）()\[\]【】!！?？'\"《》,，、0-9]", "", s or "").lower()
+
+
+def _merge_online_items(cms_items, js_items, limit=8):
+    """按来源轮流取结果，让「全部同时」时每个源都有机会出现在前 8 条。"""
+    groups, order = {}, []
+    for it in list(cms_items or []) + list(js_items or []):
+        if not isinstance(it, dict):
+            continue
+        site = str(it.get("ancestor_name") or "").split(" · ", 1)[0].strip()
+        site = site or "?"
+        if site not in groups:
+            groups[site] = []
+            order.append(site)
+        groups[site].append(it)
+    out, seen = [], set()
+    while len(out) < limit:
+        moved = False
+        for site in order:
+            q = groups.get(site) or []
+            while q:
+                it = q.pop(0)
+                key = _norm_title(it.get("title") or "")
+                if key and key in seen:
+                    continue
+                if key:
+                    seen.add(key)
+                out.append(it)
+                moved = True
+                break
+            if len(out) >= limit:
+                break
+        if not moved:
+            break
+    return out
 
 
 def title_score(a, b):
@@ -935,16 +970,19 @@ async def _resolve_title(rec):
         rec["resolved_at"] = int(time.time())
         return
     hits = []          # (score, site, cand)
-    used = CMS_PRIMARY
-    for level in (CMS_PRIMARY, CMS_FALLBACK):
-        used = level
-        for site in level:
+    mode, p_sites, f_sites, _js_limit = cms_plan()
+    levels = [p_sites + f_sites] if mode == "parallel" else [p_sites, f_sites]
+    sem = asyncio.Semaphore(4)
+
+    async def query_one(site):
+        async with sem:
             try:
                 data = await cms_query(site, title)
             except Exception as e:
                 log("resolve query err:", site.get("name"), repr(e)[:80])
-                continue
-            for cand in data:
+                return []
+            got = []
+            for cand in data or []:
                 sc = title_score(title, cand.get("vod_name") or "")
                 if sc < 0.6:
                     continue
@@ -953,10 +991,22 @@ async def _resolve_title(rec):
                     if det:
                         cand = {**cand, **det}
                 if (cand.get("vod_play_url") or ""):
-                    hits.append((sc, site, cand))
-        if hits:
+                    got.append((sc, site, cand))
+            return got
+
+    for idx, level in enumerate(levels):
+        if not level:
+            continue
+        res = await asyncio.gather(*(query_one(s) for s in level),
+                                   return_exceptions=True)
+        for r in res:
+            if isinstance(r, Exception):
+                log("resolve search err:", repr(r)[:160])
+            else:
+                hits.extend(r)
+        if hits and mode == "priority":
             break                      # 主用站命中就不再等兜底站
-        if level is CMS_PRIMARY:
+        if mode == "priority" and idx == 0:
             log(f"resolve '{title}' 主用站无果，查兜底站 …")
     if not hits:
         rec["eps"] = rec.get("eps") or []
@@ -967,7 +1017,8 @@ async def _resolve_title(rec):
 
     # 按标题匹配度排序；同分时按用户配置的主用/兜底顺序。
     # 不对任何具体站点做硬编码偏向，避免“没内置源、却内置偏好”的矛盾。
-    hits.sort(key=lambda x: (-x[0], CMS_SITES.index(x[1])))
+    order = {id(s): i for i, s in enumerate(CMS_SITES)}
+    hits.sort(key=lambda x: (-x[0], order.get(id(x[1]), 999)))
     best_score, _bs, best = hits[0][0], None, hits[0][2]
     # 集数最多的候选作为主线路骨架
     main_eps = parse_episodes(best.get("vod_play_url") or "")
@@ -1637,6 +1688,11 @@ _CONFIG_NOTE = [
     "online_visibility: 在线源（搜索结果 / 豆瓣伪库 / 在线继续播放）对谁可见：",
     "                   all=所有用户，admin=仅管理员（默认），users=仅 online_users 里的用户",
     "online_users     : online_visibility=users 时生效，填飞牛影视用户名，大小写不敏感",
+    "",
+    "source_mode      : 采集源查询方式：priority=主用优先（旧行为，主用落空才查兜底），",
+    "                   parallel=全部同时（主用+兜底一起查，所有启用的源都生效）",
+    "source_limit     : 最多启用几个采集源（0=不限；按主用→兜底顺序取前 N 个）",
+    "js_source_limit  : 最多同时查几个 JS 源（0=不限；默认 4，避免一次启动太多引擎）",
 ]
 
 DEFAULT_CONFIG = {
@@ -1649,6 +1705,10 @@ DEFAULT_CONFIG = {
     # 默认只给管理员看，避免在线源（以及在线观看记录）默认暴露给全家所有账号。
     "online_visibility": "admin",
     "online_users": [],
+    # 旧配置没有这三个字段时按旧行为（主用优先）走；新装模板默认「全部同时」。
+    "source_mode": "priority",
+    "source_limit": 0,
+    "js_source_limit": 4,
 }
 
 # 下发到浏览器的写操作凭证（cookie 名）。它不是给人看的，浏览器自动带。
@@ -1712,6 +1772,7 @@ def save_config(patch):
     except Exception as e:
         return False, "写不了 %s：%s" % (CONFIG_FILE, repr(e)[:120])
     _POLICY_CACHE["ts"] = 0.0
+    _SOURCE_CFG_CACHE["ts"] = 0.0
     return True, "已保存"
 
 
@@ -1861,6 +1922,54 @@ def online_allowed(user):
     name = str(user.get("username") or "").strip().lower()
     guid = str(user.get("guid") or "").strip().lower()
     return bool(name and name in allowed) or bool(guid and guid in allowed)
+
+
+_SOURCE_CFG_CACHE = {"ts": 0.0, "mode": "priority",
+                     "limit": 0, "js_limit": 4}
+
+
+def _limit_int(v, default, maximum):
+    try:
+        n = int(v)
+    except Exception:
+        n = default
+    return max(0, min(maximum, n))
+
+
+def source_policy():
+    """返回 (查询方式, 采集源上限, JS 源上限)；0 表示不限。"""
+    now = time.time()
+    if now - _SOURCE_CFG_CACHE["ts"] < 2.0:
+        return (_SOURCE_CFG_CACHE["mode"], _SOURCE_CFG_CACHE["limit"],
+                _SOURCE_CFG_CACHE["js_limit"])
+    cfg = load_config()
+    mode = str(cfg.get("source_mode") or "priority").strip().lower()
+    if mode not in ("priority", "parallel"):
+        mode = "priority"
+    limit = _limit_int(cfg.get("source_limit"), 0, 100)
+    js_limit = _limit_int(cfg.get("js_source_limit"), 4, 50)
+    _SOURCE_CFG_CACHE.update({"ts": now, "mode": mode, "limit": limit,
+                              "js_limit": js_limit})
+    return mode, limit, js_limit
+
+
+def cms_plan():
+    """按配置把主用/兜底整理成本次真正启用的两级源。
+    返回 (mode, primary, fallback, js_limit)。
+    source_limit 按「主用在前、兜底在后」截断；0 表示不限。"""
+    mode, limit, js_limit = source_policy()
+    p = list(CMS_PRIMARY)
+    f = list(CMS_FALLBACK)
+    if limit > 0:
+        p = p[:limit]
+        f = f[:max(0, limit - len(p))]
+    return mode, p, f, js_limit
+
+
+def source_policy_payload():
+    mode, limit, js_limit = source_policy()
+    return {"source_mode": mode, "source_limit": limit,
+            "js_source_limit": js_limit}
 
 
 def public_config():
@@ -2082,13 +2191,23 @@ def _test_js_sites(sites, keyword, timeout):
     return out
 
 
-def _do_test(sites, keyword, timeout):
+def _do_test(sites, keyword, timeout, source_limit=None,
+             js_source_limit=None, source_mode=None):
     """配置页：逐个测响应时间/命中/可放线路，并给出推荐方案（阻塞，跑在线程里）。"""
     try:
         timeout = float(timeout)
     except (TypeError, ValueError):
         timeout = 25.0
     timeout = min(max(timeout, 5.0), 60.0)
+    cur_mode, cur_limit, cur_js = source_policy()
+    if source_mode not in ("priority", "parallel"):
+        source_mode = cur_mode
+    if source_limit is None:
+        source_limit = cur_limit
+    if js_source_limit is None:
+        js_source_limit = cur_js
+    source_limit = _limit_int(source_limit, 0, 100)
+    js_source_limit = _limit_int(js_source_limit, 4, 50)
     clean, jsclean = [], []
     for s in (sites if isinstance(sites, list) else []):
         if not isinstance(s, dict):
@@ -2117,7 +2236,9 @@ def _do_test(sites, keyword, timeout):
     results = webui.test_sites(clean, keyword or "凡人", timeout) if clean else []
     if jsclean:
         results += _test_js_sites(jsclean, keyword or "你好", timeout)
-    return {"ok": True, "results": results, "recommend": webui.recommend(results)}
+    return {"ok": True, "results": results,
+            "recommend": webui.recommend(results, source_limit,
+                                         js_source_limit, source_mode)}
 
 
 async def _cap_and_replay(head, body, raw):
@@ -3351,6 +3472,7 @@ async def handle_request(reader, writer, head, headers, body):
             "primary": CMS_PRIMARY,
             "fallback": CMS_FALLBACK,
             "js": JS_SITES,
+            **source_policy_payload(),
         }))
         await writer.drain()
         return
@@ -3402,20 +3524,33 @@ async def handle_request(reader, writer, head, headers, body):
                     v = [v]
                 patch["online_users"] = [str(x).strip() for x in v
                                          if str(x).strip()]
+            if "source_mode" in req:
+                sm = str(req.get("source_mode") or "").strip().lower()
+                if sm in ("priority", "parallel"):
+                    patch["source_mode"] = sm
+                else:
+                    ok = False
+                    msg += "；查询方式不合法"
+            if "source_limit" in req:
+                patch["source_limit"] = _limit_int(req.get("source_limit"), 0, 100)
+            if "js_source_limit" in req:
+                patch["js_source_limit"] = _limit_int(
+                    req.get("js_source_limit"), 4, 50)
             if patch:
                 ok2, msg2 = save_config(patch)
                 if not ok2:
                     ok = False
                     msg += "；" + msg2
                 elif ok:
-                    msg += "；可见范围已保存"
+                    msg += "；配置已保存"
             writer.write(json_response({"ok": ok, "msg": msg,
                                         "file": SOURCES_FILE,
                                         "origin": SOURCES_ORIGIN,
                                         "primary": CMS_PRIMARY,
                                         "fallback": CMS_FALLBACK,
                                         "js": JS_SITES,
-                                        **visibility_payload()},
+                                        **visibility_payload(),
+                                        **source_policy_payload()},
                                        extra=ensure_cookie(headers)))
         elif path == "/v/__mitm__/api/sources":
             writer.write(json_response({"ok": True, "msg": _SOURCES_MSG,
@@ -3427,7 +3562,8 @@ async def handle_request(reader, writer, head, headers, body):
                                         "write": write_state(headers),
                                         "engine": jsspider.info() if jsspider else
                                                   {"available": False, "why": _JS_ERR},
-                                        **visibility_payload()},
+                                        **visibility_payload(),
+                                        **source_policy_payload()},
                                        extra=ensure_cookie(headers)))
         elif path == "/v/__mitm__/api/users":
             writer.write(json_response({"ok": True, **visibility_payload()},
@@ -3449,6 +3585,15 @@ async def handle_request(reader, writer, head, headers, body):
                 patch["online_users"] = ([str(x).strip() for x in v
                                           if str(x).strip()]
                                          if isinstance(v, list) else [str(v).strip()])
+            if "source_mode" in req:
+                sm = str(req.get("source_mode") or "").strip().lower()
+                if sm in ("priority", "parallel"):
+                    patch["source_mode"] = sm
+            if "source_limit" in req:
+                patch["source_limit"] = _limit_int(req.get("source_limit"), 0, 100)
+            if "js_source_limit" in req:
+                patch["js_source_limit"] = _limit_int(
+                    req.get("js_source_limit"), 4, 50)
             # 便捷写法：把「当前请求的来源 IP」直接加进白名单
             if req.get("add_ip"):
                 cfg = load_config()
@@ -3461,11 +3606,13 @@ async def handle_request(reader, writer, head, headers, body):
             writer.write(json_response({"ok": ok, "msg": msg,
                                         "config": public_config(),
                                         **visibility_payload(),
+                                        **source_policy_payload(),
                                         **write_state(headers)},
                                        extra=ensure_cookie(headers)))
         elif path == "/v/__mitm__/api/config":
             writer.write(json_response({"ok": True, "config": public_config(),
                                         **visibility_payload(),
+                                        **source_policy_payload(),
                                         **write_state(headers)},
                                        extra=ensure_cookie(headers)))
         elif path == "/v/__mitm__/api/import" and method == "POST":
@@ -3478,7 +3625,10 @@ async def handle_request(reader, writer, head, headers, body):
             writer.write(json_response(
                 await asyncio.to_thread(_do_test, req.get("sites") or [],
                                         str(req.get("keyword") or "凡人"),
-                                        req.get("timeout")),
+                                        req.get("timeout"),
+                                        req.get("source_limit"),
+                                        req.get("js_source_limit"),
+                                        req.get("source_mode")),
                 extra=ensure_cookie(headers)))
         else:
             writer.write(text_response("未知接口", status=404))

@@ -11,7 +11,12 @@
   "",
   "online_visibility: 在线源（搜索结果 / 豆瓣伪库 / 在线继续播放）对谁可见：",
   "                   all=所有用户，admin=仅管理员（默认），users=仅 online_users 里的用户",
-  "online_users     : online_visibility=users 时生效，填飞牛影视用户名，大小写不敏感"
+  "online_users     : online_visibility=users 时生效，填飞牛影视用户名，大小写不敏感",
+  "",
+  "source_mode      : 采集源查询方式：priority=主用优先（旧行为，主用落空才查兜底），",
+  "                   parallel=全部同时（主用+兜底一起查，所有启用的源都生效）",
+  "source_limit     : 最多启用几个采集源（0=不限；按主用→兜底顺序取前 N 个）",
+  "js_source_limit  : 最多同时查几个 JS 源（0=不限；默认 4，避免一次启动太多引擎）"
  ],
  "write_allow_any": false,
  "write_allow_ip": [],
@@ -19,5 +24,8 @@
  "first_trusted": false,
  "write_token": "",
  "online_visibility": "admin",
- "online_users": []
+ "online_users": [],
+ "source_mode": "parallel",
+ "source_limit": 0,
+ "js_source_limit": 4
 }
