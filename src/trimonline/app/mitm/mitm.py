@@ -463,6 +463,38 @@ def _watch_key(user_guid, guid):
     return (user_guid or "") + "|" + guid
 
 
+def _rec_title_key(guid, rec):
+    """跨源认「同一部片」用的键：只认没有分集的条目，避免不同剧的“第1集”撞车。"""
+    if not isinstance(rec, dict) or rec.get("series") or rec.get("episode_number"):
+        return ""
+    return _norm_hgdj(rec.get("title") or "")
+
+
+def watch_lookup(user, guid):
+    """取某个用户的续播位置：精确 guid / 旧版裸 guid / 同名条目里最近的一条。
+    同名兜底让「换源后进度不丢」：ffzy 的《长征》看到 2:57，
+    换到 31 的同名条目打开也从 2:57 继续。"""
+    uid = str((user or {}).get("guid") or "")
+    best = watch.get(_watch_key(uid, guid))
+    if not isinstance(best, dict):
+        best = watch.get(guid)                # 旧版记录没有 u 字段
+        if not isinstance(best, dict):
+            best = {}
+    want = _rec_title_key(guid, registry.get(guid) or "")
+    if want:
+        for key, r in watch.items():
+            if not isinstance(r, dict):
+                continue
+            owner = _watch_owner(r)
+            if owner and owner != uid:
+                continue
+            g2 = _watch_guid(key, r)
+            t = _rec_title_key(g2, registry.get(g2) or "")
+            if t and t == want and int(r.get("at") or 0) > int(best.get("at") or 0):
+                best = r
+    return best
+
+
 def note_watch(guid, pos, extra=None, user=None):
     """记录一条观看进度（按用户隔离）。pos<=0 表示已看完/退出。"""
     if not guid or not isinstance(registry.get(guid), dict):
@@ -474,13 +506,9 @@ def note_watch(guid, pos, extra=None, user=None):
     uid = str((user or {}).get("guid") or "")
     key = _watch_key(uid, guid)
     if pos <= 0:
-        # 看完/退出：清掉这个用户自己的进度，别让「继续播放」一直挂着旧位置。
-        # 管理员顺手清掉旧版没有 u 字段的遗留记录。
-        changed = watch.pop(key, None) is not None
-        if (user or {}).get("is_admin") and not _watch_owner(watch.get(guid, {})):
-            changed = watch.pop(guid, None) is not None or changed
-        if changed:
-            save_watch()
+        # 播放器每次打开都会先上报一次起步值（实测有 0s 甚至 -359s），
+        # 把它当「已看完」删进度的话，一打开视频记录就没了。
+        # 这里只忽略这种上报；真正的删除走 play/record DELETE（界面里删除记录）。
         return
     rec = {"ts": pos, "at": int(time.time()), "g": guid, "u": uid}
     rec.update(extra or {})
@@ -528,11 +556,17 @@ def watch_list(user=None):
         if old is None or rec.get("at", 0) > old.get("at", 0):
             chosen[guid] = rec
     out = []
+    seen_titles = set()
     for guid, rec in sorted(chosen.items(),
                             key=lambda kv: kv[1].get("at", 0), reverse=True):
         r = registry.get(guid)
         if not isinstance(r, dict) or not (r.get("eps") or []):
             continue                      # 片源已失效的不再展示
+        tkey = _rec_title_key(guid, r)    # 换源后同一部片只留最近的一条
+        if tkey:
+            if tkey in seen_titles:
+                continue
+            seen_titles.add(tkey)
         item = build_item(guid, r)
         item["last_play"] = True
         item["visible"] = True
@@ -915,6 +949,58 @@ async def query_site(site, kw, sem):
         log("online search err", site.get("name"), repr(e)[:120])
         return []
 
+# 搜索结果缓存：慢源不阻塞本次搜索，结果后台补齐进缓存；
+# 45 秒内重复搜同一个词直接吃缓存 —— 列表只会越刷越多，
+# 等价于「先反馈快源结果，慢源结果下拉/重搜时继续补上」。
+_SEARCH_CACHE = {}
+_SEARCH_TTL = 45.0        # 重复搜索直接命中缓存的时间窗
+_SEARCH_KEEP = 900.0      # 后台补齐结果的保留时长
+_SEARCH_MAX = 120         # 最多缓存多少个关键词
+
+
+def _cache_put(qkey, items):
+    now = time.time()
+    ent = _SEARCH_CACHE.get(qkey)
+    if not ent:
+        ent = {"ts": 0.0, "items": {}}
+        _SEARCH_CACHE[qkey] = ent
+    ent["ts"] = now
+    for it in items or []:
+        if isinstance(it, dict) and it.get("guid"):
+            ent["items"][it["guid"]] = it
+    if len(_SEARCH_CACHE) > _SEARCH_MAX:
+        for k in sorted(_SEARCH_CACHE,
+                        key=lambda x: _SEARCH_CACHE[x].get("ts", 0)
+                        )[:len(_SEARCH_CACHE) - _SEARCH_MAX]:
+            _SEARCH_CACHE.pop(k, None)
+
+
+def _cache_get(qkey, max_age=_SEARCH_KEEP):
+    ent = _SEARCH_CACHE.get(qkey)
+    if not ent or time.time() - ent.get("ts", 0) > max_age:
+        return []
+    return list(ent["items"].values())
+
+
+def _bg_collect(t, qkey):
+    """慢源收尾任务：不阻塞本次搜索，出结果进缓存供下次搜索/下拉刷新。"""
+    def _cb(fut):
+        try:
+            if fut.cancelled():
+                return
+            exc = fut.exception()
+            if exc is not None:
+                return
+            items = fut.result() or []
+            if items:
+                _cache_put(qkey, items)
+                log("online search 后台补进 %d 条（'%s'）"
+                    % (len(items), qkey[:16]))
+        except Exception:
+            pass
+    t.add_done_callback(_cb)
+
+
 async def online_search(kw, _allow_fallback=True):
     if not kw:
         return []
@@ -922,6 +1008,12 @@ async def online_search(kw, _allow_fallback=True):
     alt_kw = _fallback_query(qkw)
     h_alias_kw = _hgdj_alias_query(qkw)
     cms_kw = h_alias_kw or qkw
+    cache_key = qkw.lower() or qkw
+    if _allow_fallback:
+        hit = _cache_get(cache_key, max_age=_SEARCH_TTL)
+        if hit:
+            log(f"online search '{kw}' -> {len(hit)} 条（缓存补全，慢源已陆续到齐）")
+            return hit
     sem = asyncio.Semaphore(4)
     mode, p_sites, f_sites, js_limit = cms_plan()
     levels = [p_sites + f_sites] if mode == "parallel" else [p_sites, f_sites]
@@ -933,9 +1025,8 @@ async def online_search(kw, _allow_fallback=True):
                      for s in level]
             if not tasks:
                 continue
-            # 先等快源；慢源（如光速）不阻塞整个搜索。
-            # 快源已有结果就直接返回，慢源这次先不等。
-            done, pending = await asyncio.wait(tasks, timeout=2.0)
+            # 先等快源 2.5 秒；慢源不阻塞本次搜索，后台继续收（进缓存）。
+            done, pending = await asyncio.wait(tasks, timeout=2.5)
             for t in done:
                 if t.cancelled():
                     continue
@@ -944,14 +1035,14 @@ async def online_search(kw, _allow_fallback=True):
                     log("online search err:", repr(exc)[:160])
                     continue
                 got.extend(t.result() or [])
-            # 快源全空时，再给慢源最多 4 秒，避免“有结果但没等到”。
+            # 快源全空时，再给慢源最多 5 秒，避免“有结果但没等到”。
             # 但如果红果已经有结果，或还能用“去掉第二部”的兜底词再搜，
-            # 就不为慢源额外等 4 秒。
+            # 就不为慢源额外等 5 秒。
             hgdj_ready = (hgdj_task.done() and not hgdj_task.cancelled()
                           and hgdj_task.exception() is None
                           and bool(hgdj_task.result()))
             if not got and pending and not hgdj_ready and not alt_kw:
-                done2, pending = await asyncio.wait(pending, timeout=4.0)
+                done2, pending = await asyncio.wait(pending, timeout=5.0)
                 for t in done2:
                     if t.cancelled():
                         continue
@@ -961,8 +1052,7 @@ async def online_search(kw, _allow_fallback=True):
                         continue
                     got.extend(t.result() or [])
             for t in pending:
-                t.cancel()
-                t.add_done_callback(_swallow)
+                _bg_collect(t, cache_key)      # 后台收尾，别掐掉
             if got and mode == "priority":
                 break                      # 主用站有结果就不再等兜底站
         return got
@@ -1019,7 +1109,13 @@ async def online_search(kw, _allow_fallback=True):
     else:
         items = _merge_online_items(cms_items + hgdj_items, js_items, 0)
     if items:
+        have = {it.get("guid") for it in items}
+        extra = [it for it in _cache_get(cache_key)
+                 if it.get("guid") not in have]
+        if extra:
+            items = items + extra      # 上一轮后台补齐的结果一并带上
         save_registry()
+        _cache_put(cache_key, items)
         log(f"online search '{kw}' -> {len(items)} 条"
             f"（{mode}，CMS {len(cms_items)} / JS {len(js_items)}"
             f" / HGDJ {len(hgdj_items)}）")
@@ -2129,7 +2225,7 @@ async def hgdj_search_items(kw, limit=12):
     return out
 
 
-def synth_play_info(guid, rec):
+def synth_play_info(guid, rec, user=None):
     vg = "onv" + guid[2:][:29]
     ag = "ona" + guid[2:][:29]
     rec["vg"], rec["ag"] = vg, ag          # 供路径反查
@@ -2140,7 +2236,7 @@ def synth_play_info(guid, rec):
         _parent = season_guid_of(_series) if _series else ""
     elif rec.get("season_marker"):
         _parent = _series
-    _w = watch.get(guid) or {}
+    _w = watch_lookup(user, guid) or {}
     return {
         "msg": "", "code": 0,
         "data": {
@@ -4030,9 +4126,14 @@ async def _probe_duration(guid, rec):
             log("duration set:", (rec.get("title") or "")[:18],
                 f"{int(total)//60}min/{nseg}seg")
         else:
+            rec["dur_v"] = DUR_V          # 失败也标记：别每个维护周期都重探一遍
             log("duration probe: 未解析到 EXTINF",
                 (rec.get("title") or "")[:18], f"len={len(txt)}")
     except Exception as e:
+        try:
+            rec["dur_v"] = DUR_V          # 站点挂了/超时同样不再重探
+        except Exception:
+            pass
         log("duration probe err:", (rec.get("title") or "")[:16], repr(e)[:100])
 
 
@@ -4046,7 +4147,7 @@ async def fill_durations(force=False):
     sem = asyncio.Semaphore(8)
 
     async def one(guid, rec):
-        if not force and rec.get("duration"):
+        if not force and (rec.get("duration") or rec.get("dur_v") == DUR_V):
             return
         eps = rec.get("eps") or []
         if not eps:
@@ -4054,18 +4155,23 @@ async def fill_durations(force=False):
         async with sem:
             await _probe_duration(guid, rec)
 
+    # 只补「没探过」的条目，且一轮最多 600 条（新的在前）：
+    # registry 里躺着大量搜索快照，逐条探测死源会把网络/事件循环拖垮。
     todo = [(g, r) for g, r in registry.items()
-            if isinstance(r, dict) and (r.get("eps") or [])]
+            if isinstance(r, dict) and (r.get("eps") or [])
+            and (force or (not r.get("duration") and r.get("dur_v") != DUR_V))]
+    todo.sort(key=lambda kv: int(kv[1].get("resolved_at") or 0), reverse=True)
+    if not force:
+        todo = todo[:600]
     if not todo:
         return
-    n0 = sum(1 for g, r in todo if not r.get("duration"))
-    log(f"fill_durations: 待补 {n0}/{len(todo)} 条")
+    log(f"fill_durations: 待补 {len(todo)} 条")
     for i in range(0, len(todo), 40):
         await asyncio.gather(*[one(g, r) for g, r in todo[i:i + 40]],
                              return_exceptions=True)
         done = sum(1 for g, r in todo if r.get("duration"))
         log(f"fill_durations: {done}/{len(todo)} 已有时长")
-        save_registry(force=True)
+    save_registry(force=True)
 
 
 async def resolve_all_pending(limit=None):
@@ -4973,7 +5079,7 @@ async def handle_request(reader, writer, head, headers, body):
             await ensure_resolved(gg)
             kick_props_probe(gg)
             _log_play_req(path, body)
-            writer.write(json_response(synth_play_info(gg, registry[gg])))
+            writer.write(json_response(synth_play_info(gg, registry[gg], req_user)))
             await writer.drain()
             return
         if path == "/v/api/v1/stream":
