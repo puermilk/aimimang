@@ -168,8 +168,15 @@ def _norm_sources(obj):
             lines = str(it.get("lines") or "").strip().lower()
             if lines not in ("single", "multi"):
                 lines = "auto"
+            try:
+                site_timeout = float(it.get("timeout") or 0)
+            except (TypeError, ValueError):
+                site_timeout = 0
+            if not (1 <= site_timeout <= 30):
+                site_timeout = 0
             norm.append({"name": name, "api": api, "referer": ref,
-                         "lines": lines, "kind": "cms"})
+                         "lines": lines, "kind": "cms",
+                         "timeout": site_timeout})
         out.append(norm)
 
     # ---- JS（drpy）源：js 可以是网址，也可以是 `**`base64 或直接贴的规则文本 ----
@@ -291,6 +298,18 @@ def reload_sources():
 # 豆瓣热播 伪媒体库
 FAKE_LIB_GUID = "on" + hashlib.md5(b"fnv-douban-hot").hexdigest()[:30]
 
+# 红果短剧 伪媒体库（由本机 HGDJ 服务提供元数据/播放流）
+HGDJ_LIB_GUID = "on" + hashlib.md5(b"fnv-hgdj-lib").hexdigest()[:30]
+HGDJ_LIB_NAME = "红果短剧"
+HGDJ_DEFAULT_URL = "http://127.0.0.1:18098"
+HGDJ_TTL = 1800
+HGDJ_DETAIL_TTL = 3600
+HGDJ_CATS = ("real-drama", "comic-drama", "ai-drama", "comic")
+_HGDJ = {"ts": 0.0, "items": {}, "order": [], "task": None,
+         "load_task": None, "totals": {}, "total_pages": {},
+         "next_page": {}, "all_loaded": False}
+_HGDJ_CFG = {"ts": 0.0, "enabled": False, "base": HGDJ_DEFAULT_URL}
+
 # 豆瓣榜单分类 → 伪媒体库（每个分类一个独立库，侧栏分别显示）
 # (key, 显示名, 豆瓣type, 豆瓣tag, 条目数, 前端category)
 # tag 均取豆瓣 search_subjects 实测可用的标签
@@ -319,7 +338,7 @@ def item_guid_of(cat_key, douban_id):
 
 
 LIB_GUIDS = {c[0]: lib_guid_of(c[0]) for c in DOUBAN_CATS}
-ALL_LIB_GUIDS = set(LIB_GUIDS.values()) | {FAKE_LIB_GUID}
+ALL_LIB_GUIDS = set(LIB_GUIDS.values()) | {FAKE_LIB_GUID, HGDJ_LIB_GUID}
 DOUBAN_TTL = 1800          # 豆瓣榜单缓存
 RESOLVE_NEG_TTL = 600      # 解析失败后的重试间隔
 AD_MAX_DUR = 30.0          # 广告分组时长上限（秒）
@@ -360,6 +379,14 @@ def load_registry():
         registry = json.load(open(REG_FILE, encoding="utf-8"))
     except Exception:
         registry = {}
+    # 重启后先把已落盘的红果剧集恢复进内存索引，库计数/列表无需等网络
+    # （episode/season 记录也带 hgdj 标记，别把它们混进媒体库列表）
+    for _g, _rec in registry.items():
+        if (isinstance(_rec, dict) and _rec.get("hgdj")
+                and not _rec.get("series")
+                and not _rec.get("episode_number")):
+            _HGDJ["order"].append(_g)
+            _HGDJ["items"][_g] = _rec
 
 watch = {}          # 观看记录；实际内容在 save_watch 定义之后载入
 
@@ -612,7 +639,7 @@ def _looks_m3u8(url):
     if u.endswith((".m3u8", ".m3u")):
         return True
     # 无扩展名时，看是否明显是网页
-    if re.search(r"/share/|/detail|/vod|/index\.html|/\w+\.html?$", u):
+    if re.search(r"/share/|/detail|/vod|/play/|/index\.html|/\w+\.html?$", u):
         return False
     return True
 
@@ -620,7 +647,18 @@ def _looks_m3u8(url):
 def parse_episodes(play_url):
     """CMS vod_play_url: "集名$url#集名$url"，多线路以 $$$ 分隔。
     返回主线各集，其余线路的同集 url 收进 ep['urls']（线路兜底）。
-    不可直放的线路（如 HTML 分享页）不作为主线路。"""
+    不可直放的线路（如 HTML 分享页）不作为主线路。
+
+    有些站（如 22-白嫖资源）只返回裸 m3u8 地址，没有 "集名$" 前缀；
+    这里也兼容，否则搜索能命中但会被当成“无播放地址”丢掉。
+    """
+    raw = (play_url or "").strip()
+    if raw.startswith("http") and "$" not in raw:
+        parts = [x.strip() for x in re.split(r"[#\n]+", raw) if x.strip()]
+        if parts and all(x.startswith("http") and _looks_m3u8(x)
+                         for x in parts[:3]):
+            return [{"name": "正片" if len(parts) == 1 else "第%d集" % (i + 1),
+                     "url": x, "urls": [x]} for i, x in enumerate(parts)]
     groups = []
     playable = []
     for line in (play_url or "").split("$$$"):
@@ -667,6 +705,14 @@ def _parse_cms(raw):
     return json.loads(raw.decode("utf-8", "replace"))
 
 
+def _site_timeout(site):
+    try:
+        t = float((site or {}).get("timeout") or 0)
+    except (TypeError, ValueError):
+        t = 0
+    return t if 1 <= t <= 30 else ONLINE_TIMEOUT
+
+
 async def cms_detail(site, vid):
     """拉取条目详情（搜索接口不返回 vod_play_url，必须走 ac=detail）"""
     if not vid:
@@ -676,7 +722,7 @@ async def cms_detail(site, vid):
     try:
         async with session.get(url, headers=hdrs, ssl=False,
                                timeout=aiohttp.ClientTimeout(
-                                   total=ONLINE_TIMEOUT)) as resp:
+                                   total=_site_timeout(site))) as resp:
             raw = await resp.read()
         data = _parse_cms(raw)
     except Exception as e:
@@ -690,7 +736,7 @@ async def cms_query(site, kw):
     url = site["api"] + "?ac=videolist&wd=" + urllib.parse.quote(kw)
     hdrs = {"User-Agent": UA, "Referer": site["referer"], "Accept": "*/*"}
     async with session.get(url, headers=hdrs, ssl=False,
-                           timeout=aiohttp.ClientTimeout(total=ONLINE_TIMEOUT)) as resp:
+                           timeout=aiohttp.ClientTimeout(total=_site_timeout(site))) as resp:
         raw = await resp.read()
     data = _parse_cms(raw)
     return data.get("list") or []
@@ -831,43 +877,51 @@ async def js_search_all(kw, cap=4, timeout=12.0):
 
 
 async def query_site(site, kw, sem):
-    async with sem:
-        data = await cms_query(site, kw)
-    out = []
-    for it in data[:8]:
-        vid = str(it.get("vod_id") or "")
-        if not vid:
-            continue
-        eps = parse_episodes(it.get("vod_play_url") or "")
-        if not eps:
-            # 搜索结果无播放地址 → 拉详情补全
-            det = await cms_detail(site, vid)
-            if det:
-                it = {**it, **det}
-                eps = parse_episodes(det.get("vod_play_url") or "")
-        if not eps:
-            continue
-        guid = make_guid(site["name"], vid)
-        pic = (it.get("vod_pic") or "").strip()
-        rec = registry.get(guid) or {}
-        rec.update({
-            "title": (it.get("vod_name") or "").strip(),
-            "overview": strip_html(it.get("vod_content") or ""),
-            "pic": pic,
-            "site": site["name"],
-            "referer": site["referer"],
-            "remarks": (it.get("vod_remarks") or "").strip(),
-            "eps": eps,
-            "resolved_at": int(time.time()),
-        })
-        registry[guid] = rec
-        out.append(to_search_item(guid, rec))
-    return out
+    try:
+        async with sem:
+            data = await cms_query(site, kw)
+        out = []
+        # 搜索不限制每个源的条数；前端展示上限由 merge 的 limit 控制。
+        for it in data:
+            vid = str(it.get("vod_id") or "")
+            if not vid:
+                continue
+            eps = parse_episodes(it.get("vod_play_url") or "")
+            if not eps:
+                # 搜索结果无播放地址 → 拉详情补全
+                det = await cms_detail(site, vid)
+                if det:
+                    it = {**it, **det}
+                    eps = parse_episodes(det.get("vod_play_url") or "")
+            if not eps:
+                continue
+            guid = make_guid(site["name"], vid)
+            pic = (it.get("vod_pic") or "").strip()
+            rec = registry.get(guid) or {}
+            rec.update({
+                "title": (it.get("vod_name") or "").strip(),
+                "overview": strip_html(it.get("vod_content") or ""),
+                "pic": pic,
+                "site": site["name"],
+                "referer": site["referer"],
+                "remarks": (it.get("vod_remarks") or "").strip(),
+                "eps": eps,
+                "resolved_at": int(time.time()),
+            })
+            registry[guid] = rec
+            out.append(to_search_item(guid, rec))
+        return out
+    except Exception as e:
+        log("online search err", site.get("name"), repr(e)[:120])
+        return []
 
-
-async def online_search(kw):
+async def online_search(kw, _allow_fallback=True):
     if not kw:
         return []
+    qkw = _search_query(kw)
+    alt_kw = _fallback_query(qkw)
+    h_alias_kw = _hgdj_alias_query(qkw)
+    cms_kw = h_alias_kw or qkw
     sem = asyncio.Semaphore(4)
     mode, p_sites, f_sites, js_limit = cms_plan()
     levels = [p_sites + f_sites] if mode == "parallel" else [p_sites, f_sites]
@@ -875,19 +929,63 @@ async def online_search(kw):
     async def cms_all():
         got = []
         for level in levels:
-            tasks = [query_site(s, kw, sem) for s in level]
-            res = await asyncio.gather(*tasks, return_exceptions=True)
-            for r in res:
-                if isinstance(r, Exception):
-                    log("online search err:", repr(r)[:160])
+            tasks = [asyncio.ensure_future(query_site(s, cms_kw, sem))
+                     for s in level]
+            if not tasks:
+                continue
+            # 先等快源；慢源（如光速）不阻塞整个搜索。
+            # 快源已有结果就直接返回，慢源这次先不等。
+            done, pending = await asyncio.wait(tasks, timeout=2.0)
+            for t in done:
+                if t.cancelled():
                     continue
-                got.extend(r)
+                exc = t.exception()
+                if exc is not None:
+                    log("online search err:", repr(exc)[:160])
+                    continue
+                got.extend(t.result() or [])
+            # 快源全空时，再给慢源最多 4 秒，避免“有结果但没等到”。
+            # 但如果红果已经有结果，或还能用“去掉第二部”的兜底词再搜，
+            # 就不为慢源额外等 4 秒。
+            hgdj_ready = (hgdj_task.done() and not hgdj_task.cancelled()
+                          and hgdj_task.exception() is None
+                          and bool(hgdj_task.result()))
+            if not got and pending and not hgdj_ready and not alt_kw:
+                done2, pending = await asyncio.wait(pending, timeout=4.0)
+                for t in done2:
+                    if t.cancelled():
+                        continue
+                    exc = t.exception()
+                    if exc is not None:
+                        log("online search err:", repr(exc)[:160])
+                        continue
+                    got.extend(t.result() or [])
+            for t in pending:
+                t.cancel()
+                t.add_done_callback(_swallow)
             if got and mode == "priority":
                 break                      # 主用站有结果就不再等兜底站
         return got
 
+    # 红果是本地缓存搜索，和采集站并发跑，别让本地结果排在 CMS 后面等。
+    hkey = _norm_title(qkw)
+    h_alias = bool(h_alias_kw) or hkey in ("红果", "红果短剧", "hongguo", "hgdj")
+    hgdj_kw = h_alias_kw or qkw
+    hlimit = 12 if h_alias else 3
+
+    async def hgdj_search():
+        if not hgdj_config()[0]:
+            return []
+        try:
+            return await asyncio.wait_for(
+                hgdj_search_items(hgdj_kw, limit=hlimit), timeout=2.0)
+        except Exception as e:
+            log("hgdj search skip:", repr(e)[:80])
+            return []
+
+    hgdj_task = asyncio.ensure_future(hgdj_search())
     cms_task = asyncio.ensure_future(cms_all())
-    js_task = (asyncio.ensure_future(js_search_all(kw, cap=js_limit))
+    js_task = (asyncio.ensure_future(js_search_all(qkw, cap=js_limit))
                if JS_SITES else None)
     cms_items = await cms_task
 
@@ -905,22 +1003,101 @@ async def online_search(kw):
             js_task.add_done_callback(_swallow)
             log("JS 源未在 %.1fs 内返回，本次先不等" % wait_s)
 
-    # 合并去重：按来源轮流取，避免第一个源就把 8 个名额占满。
-    items = _merge_online_items(cms_items, js_items, 8)
+    # 红果短剧：只查本地已缓存的剧集标题，不额外打上游接口。
+    # 普通搜索只给红果少量名额，避免把采集站/JS 源的结果挤掉；
+    # 只有明确搜“红果/红果短剧”时才多返回红果库条目。
+    hgdj_items = []
+    try:
+        hgdj_items = await hgdj_task
+    except Exception as e:
+        log("hgdj search skip:", repr(e)[:80])
+
+    # 合并去重：普通搜索把原有采集源放在前面，红果只做补充；
+    # 搜“红果”时红果库优先，方便直接进红果条目。
+    if h_alias:
+        items = _merge_online_items(hgdj_items + cms_items, js_items, 0)
+    else:
+        items = _merge_online_items(cms_items + hgdj_items, js_items, 0)
     if items:
         save_registry()
         log(f"online search '{kw}' -> {len(items)} 条"
-            f"（{mode}，CMS {len(cms_items)} / JS {len(js_items)}）")
+            f"（{mode}，CMS {len(cms_items)} / JS {len(js_items)}"
+            f" / HGDJ {len(hgdj_items)}）")
+    elif _allow_fallback and alt_kw:
+        log(f"online search '{kw}' 无结果，回退搜 '{alt_kw}'")
+        return await online_search(alt_kw, _allow_fallback=False)
     return items
 
 
 # --------------------------------------------------- 标题解析 / 播放源解析 ---
+def _search_query(kw):
+    """中文关键词去掉输入法带出的空格；英文保留空格。"""
+    s = (kw or "").strip()
+    if re.search(r"[\u4e00-\u9fff]", s):
+        s = re.sub(r"\s+", "", s)
+    return s
+
+
+def _hgdj_alias_query(kw):
+    """把“红果 xxx / 红果短剧 xxx”拆成 xxx；没有前缀返回空串。"""
+    s = (kw or "").strip()
+    low = s.lower()
+    for prefix in ("红果短剧", "红果", "hongguo", "hgdj"):
+        if low.startswith(prefix):
+            return s[len(prefix):].strip(" -_·:：,，").strip()
+    return ""
+
+
+def _fallback_query(kw):
+    """精确搜索落空时，去掉“第二部/2”这类后缀再试一次。
+    例：“李卫当官 第二部” → “李卫当官”。"""
+    t = (kw or "").strip()
+    alt = re.sub(r"\s*第\s*[0-9零〇一二两三四五六七八九十百]+\s*[部季集]\s*$",
+                 "", t).strip()
+    if alt == t:
+        alt = re.sub(r"(?<=[\u4e00-\u9fff])\s*[0-9]+\s*$", "", t).strip()
+    return alt if alt and alt != t else ""
+
+
 def _norm_title(s):
     return re.sub(r"[\s\-—:：·\.（）()\[\]【】!！?？'\"《》,，、0-9]", "", s or "").lower()
 
 
+_CN_DIGITS = {"零": 0, "〇": 0, "一": 1, "二": 2, "两": 2,
+              "三": 3, "四": 4, "五": 5, "六": 6, "七": 7,
+              "八": 8, "九": 9}
+_CN_UNITS = {"十": 10, "百": 100, "千": 1000, "万": 10000}
+
+
+def _cn_num_to_arabic(text):
+    total = section = number = 0
+    for ch in text:
+        if ch in _CN_DIGITS:
+            number = _CN_DIGITS[ch]
+        elif ch in _CN_UNITS:
+            unit = _CN_UNITS[ch]
+            if unit == 10000:
+                section = (section + number) * unit
+                total += section
+                section = number = 0
+            else:
+                section += (number or 1) * unit
+                number = 0
+    return str(total + section + number)
+
+
+def _norm_hgdj(s):
+    """红果标题匹配：中文数字与阿拉伯数字统一，保留数字。
+    例：“我本四十岁” / “我本40岁” / “我本40sui” 都能匹配。"""
+    t = (s or "").lower()
+    t = re.sub(r"(?<=\d)\s*sui\b", "岁", t)
+    t = re.sub(r"[零〇一二两三四五六七八九十百千万]+",
+               lambda m: _cn_num_to_arabic(m.group(0)), t)
+    return re.sub(r"[\s\-—:：·\.（）()\[\]【】!！?？'\"《》,，、]", "", t)
+
+
 def _merge_online_items(cms_items, js_items, limit=8):
-    """按来源轮流取结果，让「全部同时」时每个源都有机会出现在前 8 条。"""
+    """按来源轮流取结果；limit<=0 表示不限制条数，全部返回。"""
     groups, order = {}, []
     for it in list(cms_items or []) + list(js_items or []):
         if not isinstance(it, dict):
@@ -932,7 +1109,7 @@ def _merge_online_items(cms_items, js_items, limit=8):
             order.append(site)
         groups[site].append(it)
     out, seen = [], set()
-    while len(out) < limit:
+    while limit <= 0 or len(out) < limit:
         moved = False
         for site in order:
             q = groups.get(site) or []
@@ -946,7 +1123,7 @@ def _merge_online_items(cms_items, js_items, limit=8):
                 out.append(it)
                 moved = True
                 break
-            if len(out) >= limit:
+            if limit > 0 and len(out) >= limit:
                 break
         if not moved:
             break
@@ -1079,6 +1256,10 @@ async def _resolve_title(rec):
 async def ensure_resolved(guid, max_age=86400):
     rec = registry.get(guid)
     if not rec or not isinstance(rec, dict):
+        return
+    if (rec.get("hgdj") and not rec.get("series")
+            and not rec.get("episode_number")):
+        await ensure_hgdj_resolved(guid, max_age=HGDJ_DETAIL_TTL)
         return
     if rec.get("eps"):
         # 豆瓣条目若还缺采集站封面（老数据），补跑一次解析
@@ -1235,7 +1416,569 @@ def fake_mdb_list():
         info = fake_mdb_info(c[0])
         if info:
             out.append(info)
+    if hgdj_config()[0]:
+        out.append(hgdj_lib_info())
     return out
+
+
+# --------------------------------------------------------- 红果短剧 (HGDJ) ---
+def hgdj_config():
+    """读取 HGDJ 开关/地址；2 秒缓存，配置页保存后无需重启。"""
+    now = time.time()
+    if now - _HGDJ_CFG["ts"] < 2.0:
+        return _HGDJ_CFG["enabled"], _HGDJ_CFG["base"]
+    cfg = load_config()
+    enabled = bool(cfg.get("hgdj_enabled"))
+    base = str(cfg.get("hgdj_url") or HGDJ_DEFAULT_URL).strip().rstrip("/")
+    if not base.startswith(("http://", "https://")):
+        base = HGDJ_DEFAULT_URL
+    _HGDJ_CFG.update({"ts": now, "enabled": enabled, "base": base})
+    return enabled, base
+
+
+def hgdj_guid_of(series_id):
+    return "on" + hashlib.md5(
+        ("fnv-hgdj-" + str(series_id)).encode()).hexdigest()[:30]
+
+
+def hgdj_ep_num(rec):
+    """当前条目对应的 HGDJ 集数（1 起）。"""
+    try:
+        n = int(rec.get("hgdj_ep") or rec.get("episode_number") or 0)
+    except Exception:
+        n = 0
+    if n:
+        return n
+    eps = rec.get("eps") or []
+    if eps and isinstance(eps[0], dict):
+        try:
+            return int(eps[0].get("hgdj_ep") or 1)
+        except Exception:
+            return 1
+    return 1
+
+
+def hgdj_is_rec(rec):
+    if not isinstance(rec, dict):
+        return False
+    if rec.get("hgdj"):
+        return True
+    srec = registry.get(rec.get("series") or "") or {}
+    return bool(isinstance(srec, dict) and srec.get("hgdj"))
+
+
+def hgdj_raw_rec(raw):
+    """把 HGDJ 的 series 元数据转成 registry 记录。"""
+    if not isinstance(raw, dict):
+        return None
+    sid = str(raw.get("series_id") or raw.get("seriesId") or "").strip()
+    if not sid:
+        return None
+    title = str(raw.get("series_name") or raw.get("name") or "").strip()
+    cover = str(raw.get("series_cover") or raw.get("cover") or "").strip()
+    intro = str(raw.get("series_intro") or raw.get("intro") or "").strip()
+    tags = raw.get("tags") or []
+    if isinstance(tags, str):
+        tags = [x.strip() for x in tags.split(",") if x.strip()]
+    try:
+        cnt = int(raw.get("episode_cnt") or 0)
+    except Exception:
+        cnt = 0
+    cnt = max(0, min(cnt, 1000))
+    eps = [{"name": f"第{i}集", "hgdj_ep": i} for i in range(1, cnt + 1)]
+    if not eps:
+        eps = [{"name": "第1集", "hgdj_ep": 1}]
+    return {
+        "title": title or "红果短剧",
+        "overview": intro,
+        "pic": cover, "pic_cms": cover,
+        "site": HGDJ_LIB_NAME, "hgdj": True, "hgdj_sid": sid,
+        "hgdj_resolved": bool(cnt), "hgdj_last_try": 0,
+        "tv": True, "eps": eps, "resolved_at": int(time.time()),
+        "tags": tags, "year": 2026,
+    }
+
+
+def _hgdj_merge(raw_items):
+    added = 0
+    for raw in raw_items or []:
+        rec = hgdj_raw_rec(raw)
+        if not rec:
+            continue
+        g = hgdj_guid_of(rec["hgdj_sid"])
+        old = registry.get(g)
+        if isinstance(old, dict) and old.get("hgdj"):
+            # 已解析过的详情优先，别被首页/分类的短元数据覆盖
+            if len(old.get("eps") or []) > len(rec.get("eps") or []):
+                rec["eps"] = old["eps"]
+                rec["hgdj_resolved"] = old.get("hgdj_resolved")
+            for k in ("title", "overview", "pic", "pic_cms", "tags"):
+                if not rec.get(k) and old.get(k):
+                    rec[k] = old[k]
+        else:
+            added += 1
+        registry[g] = rec
+        if g not in _HGDJ["order"]:
+            _HGDJ["order"].append(g)
+        _HGDJ["items"][g] = rec
+    return added
+
+
+async def _hgdj_json(path, timeout=15):
+    enabled, base = hgdj_config()
+    if not enabled or session is None:
+        return None
+    try:
+        async with session.get(
+                base + path, ssl=False,
+                timeout=aiohttp.ClientTimeout(total=timeout)) as r:
+            if r.status != 200:
+                return None
+            return await r.json(content_type=None)
+    except Exception as e:
+        log("hgdj api err", path[:80], repr(e)[:100])
+        return None
+
+
+def _hgdj_total():
+    """HGDJ 上游分页给出的总量；未拿到时退回已加载数量。"""
+    n = len(hgdj_series_guids())
+    try:
+        total = sum(int(x or 0) for x in (_HGDJ.get("totals") or {}).values())
+    except Exception:
+        total = 0
+    return max(n, total)
+
+
+async def _hgdj_page(cat, page):
+    j = await _hgdj_json(
+        f"/api/browse?category={urllib.parse.quote(cat)}&page={int(page)}",
+        20)
+    return j if isinstance(j, dict) else None
+
+
+def _hgdj_absorb_page(cat, j):
+    if not isinstance(j, dict):
+        return 0
+    p = j.get("pagination") or {}
+    try:
+        total = int(p.get("total") or 0)
+        pages = int(p.get("totalPages") or 0)
+    except Exception:
+        total, pages = 0, 0
+    if total:
+        _HGDJ["totals"][cat] = total
+    if pages:
+        _HGDJ["total_pages"][cat] = pages
+    added = _hgdj_merge(j.get("items") or [])
+    return added
+
+
+async def _fetch_hgdj_all():
+    # 第一屏：推荐 + 四个分类的第 1 页。后续页在用户滚动时按需加载，
+    # 避免一次性打 100+ 个上游请求拖慢媒体库首屏。
+    got = await asyncio.gather(
+        _hgdj_json("/api/recommend", 20),
+        *[_hgdj_page(c, 1) for c in HGDJ_CATS],
+        return_exceptions=True)
+    added = 0
+    if isinstance(got[0], dict):
+        added += _hgdj_merge(got[0].get("items") or [])
+    for cat, j in zip(HGDJ_CATS, got[1:]):
+        added += _hgdj_absorb_page(cat, j)
+        if cat not in _HGDJ["next_page"]:
+            _HGDJ["next_page"][cat] = 2
+    _HGDJ["ts"] = time.time()
+    _HGDJ["all_loaded"] = all(
+        _HGDJ["next_page"].get(c, 2) > _HGDJ["total_pages"].get(c, 0)
+        for c in HGDJ_CATS)
+    if added:
+        save_registry(force=True)
+    log(f"hgdj library: {len(_HGDJ['order'])} 部 / 上游约 {_hgdj_total()} 部"
+        f"（新增 {added}）")
+    # 首页条目的 episode_cnt 常为 0，后台补一次详情，让库列表尽快显示真实集数
+    pending = [g for g in hgdj_series_guids()
+               if not registry[g].get("hgdj_resolved")
+               and len(registry[g].get("eps") or []) <= 1]
+    if pending:
+        asyncio.create_task(_hgdj_prefetch(pending[:60]))
+    # 首屏返回后再在后台把剩余分类页补齐，滚动/搜索时就有完整片库。
+    if not _HGDJ.get("all_loaded"):
+        asyncio.create_task(ensure_hgdj_loaded(_hgdj_total()))
+    return hgdj_series_guids()
+
+
+async def _hgdj_load_more():
+    """每个分类各取下一页；返回新增剧集数。"""
+    if _HGDJ.get("all_loaded"):
+        return 0
+    cats = [c for c in HGDJ_CATS
+            if _HGDJ["next_page"].get(c, 2)
+            <= _HGDJ["total_pages"].get(c, 0)]
+    if not cats:
+        _HGDJ["all_loaded"] = True
+        return 0
+    got = await asyncio.gather(
+        *[_hgdj_page(c, _HGDJ["next_page"].get(c, 2)) for c in cats],
+        return_exceptions=True)
+    added = 0
+    for cat, j in zip(cats, got):
+        added += _hgdj_absorb_page(cat, j)
+        _HGDJ["next_page"][cat] = _HGDJ["next_page"].get(cat, 2) + 1
+    _HGDJ["all_loaded"] = all(
+        _HGDJ["next_page"].get(c, 2) > _HGDJ["total_pages"].get(c, 0)
+        for c in HGDJ_CATS)
+    if added:
+        save_registry(force=True)
+    return added
+
+
+async def ensure_hgdj_loaded(count, deadline=None):
+    """确保已加载至少 count 部；滚动/搜索时再按页拉取。"""
+    if count <= len(hgdj_series_guids()):
+        return
+    t = _HGDJ.get("load_task")
+    if t is not None and not t.done():
+        # 后台补全任务可能还要跑几十秒，不能把当前分页请求一起拖住；
+        # 等一小会儿拿到最新进度即可，前端下一次滚动会再取。
+        try:
+            await asyncio.wait_for(asyncio.shield(t), timeout=1.2)
+        except Exception:
+            pass
+        return
+    async def run():
+        rounds = 0
+        while (len(hgdj_series_guids()) < count
+               and not _HGDJ.get("all_loaded") and rounds < 40):
+            if deadline is not None and time.monotonic() >= deadline:
+                break
+            n = await _hgdj_load_more()
+            rounds += 1
+            if n == 0 and _HGDJ.get("all_loaded"):
+                break
+    t = asyncio.create_task(run())
+    _HGDJ["load_task"] = t
+    try:
+        await t
+    except Exception as e:
+        log("hgdj load more err:", repr(e)[:100])
+    finally:
+        if _HGDJ.get("load_task") is t:
+            _HGDJ["load_task"] = None
+
+
+async def _hgdj_prefetch(guids):
+    sem = asyncio.Semaphore(3)
+
+    async def one(g):
+        async with sem:
+            try:
+                await ensure_hgdj_resolved(g)
+            except Exception as e:
+                log("hgdj prefetch err:", repr(e)[:90])
+
+    await asyncio.gather(*[one(g) for g in guids], return_exceptions=True)
+
+
+async def fetch_hgdj_all(force=False):
+    enabled, _ = hgdj_config()
+    if not enabled:
+        return []
+    if (not force and _HGDJ["order"]
+            and time.time() - _HGDJ["ts"] < HGDJ_TTL):
+        return list(_HGDJ["order"])
+    t = _HGDJ.get("task")
+    if t is not None and not t.done():
+        try:
+            return await t
+        except Exception:
+            return list(_HGDJ["order"])
+    t = asyncio.create_task(_fetch_hgdj_all())
+    _HGDJ["task"] = t
+    try:
+        return await t
+    except Exception as e:
+        log("hgdj fetch err:", repr(e)[:120])
+        return list(_HGDJ["order"])
+    finally:
+        if _HGDJ.get("task") is t:
+            _HGDJ["task"] = None
+
+
+def hgdj_series_guids():
+    out = []
+    for g in _HGDJ["order"]:
+        rec = registry.get(g)
+        if (isinstance(rec, dict) and rec.get("hgdj")
+                and not rec.get("series")
+                and not rec.get("episode_number")):
+            out.append(g)
+    return out
+
+
+def hgdj_lib_info():
+    guids = hgdj_series_guids()
+    covers = []
+    for g in guids:
+        c = (registry.get(g) or {}).get("pic_cms") or ""
+        if c and c not in covers:
+            covers.append(c)
+        if len(covers) >= 6:
+            break
+    n = _hgdj_total() if guids else 0
+    return {
+        "guid": HGDJ_LIB_GUID, "name": HGDJ_LIB_NAME, "title": HGDJ_LIB_NAME,
+        "category": "TV", "dir_list": [], "lan": "zh-CN",
+        "auto_scrap_subtitle": 0, "include_adult": False,
+        "subtitle_lan": "zh-CN",
+        "poster": covers[0] if covers else "", "poster_type": 0,
+        "posters": covers, "view_type": 0, "refresh_disabled": True,
+        "prefer_local_nfo": 0, "skip_filesize": 1, "auto_progress_thumb": 0,
+        "last_update_time": int(time.time()), "sort_num": 0,
+        "type": "TV", "number_of_episodes": n, "number_of_seasons": 1,
+        "season_number": 0, "episode_number": 0, "overview": "",
+        "vote_average": "0", "genres": [], "content_ratings": "",
+        "runtime": 0, "is_favorite": 0, "is_watched": 0, "watched_ts": 0,
+        "can_play": 1, "play_error": "", "parent_guid": "",
+        "ancestor_guid": "", "ancestor_name": "", "ancestor_category": "TV",
+        "trim_id": "", "original_title": "", "play_item_guid": "",
+        "duration": 0, "logic_type": 0,
+        "backdrops": covers[0] if covers else "",
+        "markedForDeletion": False,
+        "media_stream": {"resolutions": ["1080p"], "audio_type": ["Stereo"],
+                         "color_range_type": ["SDR"]},
+        "isDirectLinkEnabled": 1,
+    }
+
+
+async def ensure_hgdj_resolved(guid, max_age=HGDJ_DETAIL_TTL):
+    rec = registry.get(guid)
+    if (not isinstance(rec, dict) or not rec.get("hgdj")
+            or rec.get("series") or rec.get("episode_number")):
+        return
+    if (rec.get("hgdj_resolved")
+            and time.time() - int(rec.get("resolved_at") or 0) < max_age):
+        return
+    if time.time() - int(rec.get("hgdj_last_try") or 0) < 30:
+        return
+    t = rec.get("_hgdj_task")
+    if t is not None:
+        try:
+            await t
+        except Exception:
+            pass
+        return
+    task = asyncio.create_task(_resolve_hgdj(rec))
+    rec["_hgdj_task"] = task
+    try:
+        await task
+    finally:
+        rec.pop("_hgdj_task", None)
+
+
+async def _resolve_hgdj(rec):
+    sid = str(rec.get("hgdj_sid") or "").strip()
+    if not sid:
+        return
+    rec["hgdj_last_try"] = int(time.time())
+    j = await _hgdj_json(f"/api/series/{urllib.parse.quote(sid)}", timeout=60)
+    if not isinstance(j, dict):
+        return
+    d = j.get("detail") or {}
+    vids = d.get("vid_list") or []
+    eps = []
+    for i, vid in enumerate(vids, 1):
+        eps.append({"name": f"第{i}集", "hgdj_ep": i, "hgdj_vid": vid})
+    if not eps:
+        try:
+            cnt = int(d.get("episode_cnt") or 0)
+        except Exception:
+            cnt = 0
+        eps = [{"name": f"第{i}集", "hgdj_ep": i}
+               for i in range(1, max(1, min(cnt, 1000)) + 1)]
+    rec.update({
+        "title": str(d.get("series_name") or rec.get("title") or ""),
+        "overview": str(d.get("series_intro") or rec.get("overview") or ""),
+        "pic": str(d.get("series_cover") or rec.get("pic") or ""),
+        "pic_cms": str(d.get("series_cover") or rec.get("pic_cms") or ""),
+        "tags": d.get("tags") or rec.get("tags") or [],
+        "eps": eps, "tv": True,
+        "hgdj_resolved": True, "resolved_at": int(time.time()),
+    })
+    g = hgdj_guid_of(sid)
+    sg = season_guid_of(g)
+    if sg in registry:
+        registry[sg]["eps"] = eps
+        registry[sg]["resolved_at"] = int(time.time())
+    save_registry()
+    log(f"hgdj resolved: {rec.get('title')} ({len(eps)} 集)")
+
+
+async def serve_hgdj_media(guid, ep, headers, writer):
+    """把 HGDJ 的 /api/play 解密流原样代理给播放器（支持 Range）。"""
+    enabled, base = hgdj_config()
+    if not enabled:
+        return False
+    rec = registry.get(guid) or {}
+    srec = rec if rec.get("hgdj") else (registry.get(rec.get("series") or "") or {})
+    sid = str(srec.get("hgdj_sid") or "").strip()
+    if not sid:
+        return False
+    try:
+        ep = int(ep or hgdj_ep_num(rec) or 1)
+    except Exception:
+        ep = 1
+    url = f"{base}/api/play/{urllib.parse.quote(sid)}/{ep}"
+    hdrs = {}
+    if headers.get("range"):
+        hdrs["Range"] = headers["range"]
+    try:
+        async with session.get(
+                url, headers=hdrs, ssl=False,
+                timeout=aiohttp.ClientTimeout(
+                    total=240, sock_connect=10, sock_read=240)) as r:
+            out = {}
+            for k in ("Content-Type", "Content-Length", "Content-Range",
+                      "Accept-Ranges", "Cache-Control", "ETag",
+                      "Last-Modified"):
+                if r.headers.get(k):
+                    out[k] = r.headers[k]
+            if not out.get("Content-Type"):
+                out["Content-Type"] = "video/mp4"
+            out["Connection"] = "close"
+            if r.status >= 400:
+                body = await r.read()
+                out["Content-Type"] = "application/json"
+                out["Content-Length"] = str(len(body))
+                await write_head(writer, r.status, out)
+                writer.write(body)
+                await writer.drain()
+                return True
+            await write_head(writer, r.status, out)
+            async for chunk in r.content.iter_chunked(65536):
+                writer.write(chunk)
+                await writer.drain()
+        return True
+    except (BrokenPipeError, ConnectionResetError):
+        return True
+    except Exception as e:
+        log("hgdj media err:", repr(e)[:140])
+        return False
+
+
+def hgdj_abs_url(path, headers=None):
+    """原生播放器（trim_player）不一定会解析相对直链，这里按请求 Host 补全。"""
+    h = headers or {}
+    host = str(h.get("x-forwarded-host") or h.get("host") or "").strip()
+    if not host:
+        return path
+    proto = str(h.get("x-forwarded-proto") or "").strip().lower()
+    try:
+        parsed = urllib.parse.urlsplit("//" + host)
+        port = parsed.port
+    except Exception:
+        parsed = None
+        port = None
+    if proto not in ("http", "https"):
+        # nginx 的 /v location 没传 X-Forwarded-Proto；按端口推断。
+        proto = "https" if port in (443, 5667) else "http"
+    # 关键：nginx 配置里是 `proxy_set_header Host $host;`，$host 会丢掉端口。
+    # iOS 客户端拿到 http://[IPv6]/... 后会去连 80 端口，直接报 STRM 直链异常。
+    # 因此 Host 没带端口时，按飞牛默认 Web 端口补齐。
+    if port is None:
+        xport = str(h.get("x-forwarded-port") or "").strip()
+        if xport.isdigit():
+            port = int(xport)
+        else:
+            port = 5667 if proto == "https" else 5666
+    if parsed is not None and parsed.port is None:
+        host = f"{host}:{port}"
+    return f"{proto}://{host}{path}"
+
+
+def hgdj_synth_stream(guid, rec, headers=None):
+    now = int(time.time() * 1000)
+    ep = hgdj_ep_num(rec)
+    direct = hgdj_abs_url(f"/v/media/hgdj/{guid}.mp4?ep={ep}", headers)
+    log("HGDJ-STREAM", direct[:160],
+        "host=" + str((headers or {}).get("host") or "-"),
+        "proto=" + str((headers or {}).get("x-forwarded-proto") or "-"),
+        "ua=" + str((headers or {}).get("user-agent") or "-")[:40],
+        "ref=" + str((headers or {}).get("referer") or "-")[:60])
+    slug = re.sub(r"[^\w一-鿿.-]+", "_", rec.get("title", "hgdj"))[:60]
+    dur = int(rec.get("duration") or 0)
+    file_stream = {
+        "guid": guid, "path": f"/hgdj/{slug}.mp4",
+        "file_name": f"{slug}.mp4", "size": 0, "timestamp": now,
+        "type": 1, "sort_num": 0, "can_play": 1, "play_error": "",
+        "create_time": now, "update_time": now, "parent_fv_guid": "",
+        "file_birth_time": now, "progress_thumb_hash_dir": "",
+    }
+    video_stream = {
+        "media_guid": guid, "title": "",
+        "guid": "onv" + guid[2:][:29],
+        "resolution_type": "1080p", "color_range_type": "SDR",
+        "codec_name": "hevc", "codec_type": "video",
+        "color_range": "", "profile": "Main", "index": 0,
+        "width": 1080, "height": 1920,
+        "coded_width": 1080, "coded_height": 1920,
+        "display_aspect_ratio": "9:16", "pix_fmt": "yuv420p",
+        "level": "120", "color_space": "bt709",
+        "color_transfer": "bt709", "color_primaries": "bt709",
+        "duration": dur, "dv_profile": "", "refs": 1,
+        "r_frame_rate": "25/1", "avg_frame_rate": "25/1",
+        "bits_per_raw_sample": "8", "bps": 4000000, "progressive": 1,
+        "bit_depth": 8, "wrapper": "mp4", "create_time": now,
+        "update_time": now, "rotation": 0, "ext1": "", "is_bluray": 0,
+    }
+    audio_streams = [{
+        "media_guid": guid, "title": "",
+        "guid": "ona" + guid[2:][:29],
+        "audio_type": "Stereo", "codec_name": "aac",
+        "codec_type": "audio", "language": "und", "channels": 2,
+        "profile": "LC", "sample_rate": "44100", "is_default": 1,
+        "channel_layout": "stereo", "duration": dur, "index": 1,
+        "bits_per_raw_sample": "16", "bps": 128000,
+        "create_time": now, "update_time": now, "is_fake": 0,
+    }]
+    qualities = [{"bitrate": 0, "resolution": "1080p",
+                  "progressive": True, "is_m3u8": False, "url": direct}]
+    return {
+        "msg": "", "code": 0,
+        "data": {
+            "file_stream": file_stream, "video_stream": video_stream,
+            "audio_streams": audio_streams, "qualities": qualities,
+            "direct_link_qualities": qualities,
+            # 不要用 9001(STRM)：飞牛影视会走 STRM 权限/直链校验，原生播放器
+            # 对相对地址或非网盘直链容易直接报 -99985。用阿里云盘直连类型，
+            # 前端仍会按 RawFile 播放，但不再触发 STRM 专用错误。
+            "cloud_storage_info": {"cloud_storage_type": 2},
+            "isDirectLinkEnabled": 1,
+        },
+    }
+
+
+def hgdj_synth_play(guid, rec, headers=None):
+    ep = hgdj_ep_num(rec)
+    direct = hgdj_abs_url(f"/v/media/hgdj/{guid}.mp4?ep={ep}", headers)
+    log("HGDJ-PLAY", direct[:160])
+    return {
+        "msg": "", "code": 0,
+        "data": {
+            "audio_guid": "ona" + guid[2:][:29], "audio_index": 1,
+            "hls_time": 0, "is_subtitle_external": 0,
+            "media_guid": guid, "play_link": direct, "line_count": 1,
+            "subtitle_guid": "", "subtitle_index": -1, "subtitle_link": "",
+            "video_guid": "onv" + guid[2:][:29], "video_index": 0,
+            "non_fatal_errno": None, "video_encoder": "",
+            "not_supported_resolution": "",
+            "supported_highest_resolution": "",
+            "isDirectLinkEnabled": 1,
+            "quality": [{"bitrate": 0, "resolution": "1080p",
+                         "progressive": True, "is_m3u8": False,
+                         "url": direct}],
+        },
+    }
 
 
 # --------------------------------------------------------- 伪造响应构造 ---
@@ -1301,6 +2044,8 @@ def build_item(guid, rec):
         "ancestor_guid": "", "ancestor_name": rec.get("site", ""),
         "ancestor_category": "Movie" if typ == "Movie" else "TV",
         "play_item_guid": "", "logic_type": 0,
+        # 红果短剧走直链 MP4，让前端按 RawFile 播放而不是拼 m3u8
+        "isDirectLinkEnabled": 1 if hgdj_is_rec(rec) else 0,
         # 以下字段搜索结果里有、媒体库条目原本没有；前端靠它们决定
         # 是否先走 play/info + stream 再 play/play，缺失会直接卡在「视频加载中」
         "lan": "zh-CN", "imdb_id": "", "file_name": "", "ts": 0,
@@ -1350,6 +2095,38 @@ def to_search_item(guid, rec):
     }
 
 
+async def hgdj_search_items(kw, limit=12):
+    """在本地红果库里按标题找；简介不再参与，避免无关结果挤占搜索。"""
+    enabled, _ = hgdj_config()
+    if not enabled or not kw:
+        return []
+    if not _HGDJ["order"]:
+        try:
+            await asyncio.wait_for(fetch_hgdj_all(), timeout=3.0)
+        except Exception:
+            pass
+    key = _norm_hgdj(kw)
+    if not key:
+        return []
+
+    # 搜“红果/红果短剧”时直接把红果库条目作为结果，否则用户会以为
+    # 这个媒体库不能被搜索。普通查询只按标题匹配，避免简介里的词
+    # 把一堆不相干的红果剧集塞进搜索结果。
+    if key in ("红果", "红果短剧", "hongguo", "hgdj"):
+        return [to_search_item(g, registry.get(g) or {})
+                for g in hgdj_series_guids()[:limit]]
+    out = []
+    for g in hgdj_series_guids():
+        rec = registry.get(g) or {}
+        hay = _norm_hgdj(rec.get("title") or "")
+        if not hay or key not in hay:
+            continue
+        out.append(to_search_item(g, rec))
+        if len(out) >= limit:
+            break
+    return out
+
+
 def synth_play_info(guid, rec):
     vg = "onv" + guid[2:][:29]
     ag = "ona" + guid[2:][:29]
@@ -1373,13 +2150,16 @@ def synth_play_info(guid, rec):
             "media_guid": guid,
             "item": build_item(guid, rec),
             "direct_link_audio_index": -1,
+            "isDirectLinkEnabled": 1 if hgdj_is_rec(rec) else 0,
         },
     }
 
 
-def synth_stream(guid):
+def synth_stream(guid, headers=None):
     now = int(time.time() * 1000)
     rec = registry.get(guid, {})
+    if hgdj_is_rec(rec):
+        return hgdj_synth_stream(guid, rec, headers)
     slug = re.sub(r"[^\w一-鿿.-]+", "_", rec.get("title", "online"))[:60]
     # 实测流参数（ffprobe 探分片得到，见 probe_props）：拿不到就用兜底值
     pr = props_of_rec(rec) or {}
@@ -1445,8 +2225,10 @@ def synth_stream(guid):
                      "cloud_storage_info": None}}
 
 
-def synth_play(guid, ep_index=0):
+def synth_play(guid, ep_index=0, headers=None):
     _rec = registry.get(guid) or {}
+    if hgdj_is_rec(_rec):
+        return hgdj_synth_play(guid, _rec, headers)
     try:
         _lines = len(build_line_index(guid, _rec, ep_index))
     except Exception:
@@ -1510,7 +2292,17 @@ def synth_episodes(g, rec):
                 "pic": srec.get("pic", ""), "site": srec.get("site", ""),
                 "referer": srec.get("referer", ""),
                 "overview": srec.get("overview", ""),
+                "hgdj": srec.get("hgdj"), "hgdj_sid": srec.get("hgdj_sid"),
+                "hgdj_ep": ep.get("hgdj_ep"),
             }
+        elif srec.get("hgdj"):
+            # 老数据可能被误当成剧集解析过，这里强制恢复成单集记录
+            registry[eg].update({
+                "hgdj": True, "hgdj_sid": srec.get("hgdj_sid"),
+                "hgdj_ep": ep.get("hgdj_ep"), "eps": [ep],
+                "series": series, "episode_number": i + 1,
+                "resolved_at": int(time.time()),
+            })
         it = build_item(eg, registry[eg])
         it.update({
             "type": "Episode",
@@ -1709,6 +2501,9 @@ DEFAULT_CONFIG = {
     "source_mode": "priority",
     "source_limit": 0,
     "js_source_limit": 4,
+    # 红果短剧：由本机 HGDJ 服务提供元数据与在线播放流。
+    "hgdj_enabled": False,
+    "hgdj_url": HGDJ_DEFAULT_URL,
 }
 
 # 下发到浏览器的写操作凭证（cookie 名）。它不是给人看的，浏览器自动带。
@@ -2918,7 +3713,7 @@ def _already_wrote(wrote):
 
 
 async def proxy_media(target, referer, client_headers, writer, owner=None,
-                      retries=2, wrote=None):
+                      retries=2, wrote=None, timeout=30):
     """拉取在线资源并写给客户端。m3u8 清单做 URI 改写+广告剔除。
     返回 True=已写出响应；False=失败（未写任何响应，可换源重试）。
 
@@ -2936,7 +3731,7 @@ async def proxy_media(target, referer, client_headers, writer, owner=None,
         try:
             return await _proxy_once(target, hdrs, referer,
                                      client_headers, writer,
-                                     wrote)
+                                     wrote, timeout)
         except _TransientUpstream:
             if _already_wrote(wrote):
                 log("upstream err after response started (no retry):",
@@ -2970,10 +3765,10 @@ class _TransientUpstream(Exception):
 
 
 async def _proxy_once(target, hdrs, referer, client_headers, writer,
-                    wrote=None):
+                    wrote=None, timeout=30):
     async with session.get(target, headers=hdrs, ssl=False,
                            allow_redirects=True,
-                           timeout=aiohttp.ClientTimeout(total=30)) as resp:
+                           timeout=aiohttp.ClientTimeout(total=timeout)) as resp:
             if resp.status >= 500 or resp.status == 429:
                 log("proxy fail", resp.status, target[:100])
                 raise _TransientUpstream(resp.status)
@@ -3413,6 +4208,12 @@ async def serve_manifest(guid, ep_index, headers, writer, line=None):
         await write_head(writer, 404, {"Content-Length": 0, "Connection": "close"})
         writer.close()
         return
+    if hgdj_is_rec(rec):
+        if not await serve_hgdj_media(guid, ep_index, headers, writer):
+            await write_head(writer, 502, {"Content-Length": 0,
+                                           "Connection": "close"})
+            writer.close()
+        return
     await ensure_resolved(guid)
     rec = registry.get(guid) or {}
     cands = play_candidates(rec, ep_index, line, guid)
@@ -3705,7 +4506,8 @@ async def handle_request(reader, writer, head, headers, body):
                     tail = tail.replace(dom, cdn)
                     break
             log("img(sys):", tail[:100])
-            if not await proxy_media(tail, ref, headers, writer):
+            if not await proxy_media(tail, ref, headers, writer,
+                                     retries=0, timeout=8):
                 await write_head(writer, 404, {"Content-Length": 0,
                                                 "Connection": "close"})
                 writer.close()
@@ -3725,6 +4527,29 @@ async def handle_request(reader, writer, head, headers, body):
             log("MEDIA-REQ", method, path[:60],
                 "pl=" + str((query.get("playlink") or [""])[0])[:120],
                 "range=" + str(headers.get("range") or "-")[:32])
+        if path.startswith("/v/media/hgdj/"):
+            gid = g
+            if not gid:
+                m = GUID_RE.search(path)
+                gid = m.group(0) if m else None
+            if not gid or not allow_online or gid not in registry:
+                await write_head(writer, 404, {"Content-Length": 0,
+                                               "Connection": "close"})
+                writer.close()
+                return
+            try:
+                ep = int((query.get("ep") or ["0"])[0] or 0)
+            except (TypeError, ValueError):
+                ep = 0
+            if not ep:
+                ep = hgdj_ep_num(registry.get(gid) or {})
+            log("HGDJ-MEDIA", gid[:18], "ep=", ep,
+                "range=" + str(headers.get("range") or "-")[:32])
+            if not await serve_hgdj_media(gid, ep, headers, writer):
+                await write_head(writer, 502, {"Content-Length": 0,
+                                               "Connection": "close"})
+                writer.close()
+            return
         if path == "/v/media/online/img":
             u = urllib.parse.unquote((query.get("u") or [""])[0])
             if u.startswith("http"):
@@ -3816,6 +4641,12 @@ async def handle_request(reader, writer, head, headers, body):
     # ---- 3) 豆瓣热播 伪媒体库 ----
     if allow_online and method == "GET" and path.startswith("/v/api/v1/mdb/"):
         lg = path[len("/v/api/v1/mdb/"):]
+        if lg == HGDJ_LIB_GUID:
+            await fetch_hgdj_all()
+            writer.write(json_response({"msg": "", "code": 0,
+                                        "data": hgdj_lib_info()}))
+            await writer.drain()
+            return
         for ck, g in LIB_GUIDS.items():
             if lg == g:
                 await fetch_douban_cat(ck)
@@ -3844,16 +4675,50 @@ async def handle_request(reader, writer, head, headers, body):
         cks = [ck for ck, g in LIB_GUIDS.items() if g in parents]
         if FAKE_LIB_GUID in parents and not cks:
             cks = ["hot_movie", "hot_tv"]      # 旧单库 → 兼容映射
-        if cks:
+        want_hgdj = HGDJ_LIB_GUID in parents
+        if cks or want_hgdj:
+            try:
+                page = max(1, int(bj.get("page") or 1))
+            except Exception:
+                page = 1
+            try:
+                page_size = max(0, int(bj.get("page_size") or 0))
+            except Exception:
+                page_size = 0
             items = []
             for ck in cks:
                 await douban_guids(ck)
                 for g in douban_cat_guids(ck):
                     items.append(build_item(g, registry[g]))
-            log("douban library list:", len(items), cks)
+            total_hgdj = 0
+            if want_hgdj:
+                await fetch_hgdj_all()
+                total_hgdj = _hgdj_total()
+                # 飞牛前端是按 page/page_size 拉取的。红果上游有约 2400 部，
+                # 首屏只加载 108 部；滚动到后面时再按需补对应页，避免一次
+                # 打 100 多个请求，也避免“划到底就没了”。
+                if page_size:
+                    await ensure_hgdj_loaded(
+                        min(total_hgdj, page * page_size))
+                for g in hgdj_series_guids():
+                    rec = registry.get(g)
+                    if isinstance(rec, dict):
+                        items.append(build_item(g, rec))
+            total = len(items)
+            if want_hgdj:
+                total = max(total, total_hgdj + len(items) - len(
+                    hgdj_series_guids()))
+            if page_size:
+                start = (page - 1) * page_size
+                items = items[start:start + page_size]
+            log("fake library list:", len(items), "total", total,
+                "page", page, "size", page_size, cks,
+                "hgdj" if want_hgdj else "")
             writer.write(json_response({"msg": "", "code": 0,
-                                        "data": {"total": len(items),
-                                                 "list": items}}))
+                                        "data": {"total": total,
+                                                 "list": items,
+                                                 "page": page,
+                                                 "page_size": page_size or len(items)}}))
             await writer.drain()
             return
     if path == "/v/api/v1/mediadb/list":
@@ -3876,6 +4741,8 @@ async def handle_request(reader, writer, head, headers, body):
                 writer.write(raw)
             else:
                 asyncio.create_task(fetch_douban_all())   # 预热各分类
+                if hgdj_config()[0]:
+                    asyncio.create_task(fetch_hgdj_all())
                 fake = fake_mdb_list()
                 j["data"] = libs + fake
                 log(f"mediadb/list: 官方 {len(libs)} 个 + 伪库 {len(fake)} "
@@ -3907,6 +4774,8 @@ async def handle_request(reader, writer, head, headers, body):
                     n = len(douban_cat_guids(ck))
                     if n:
                         d[LIB_GUIDS[ck]] = n
+                if hgdj_config()[0] and hgdj_series_guids():
+                    d[HGDJ_LIB_GUID] = len(hgdj_series_guids())
                 log(f"mediadb/sum: {len(d)} 个库计数")
                 writer.write(json_response(j))
         except Exception:
@@ -3919,16 +4788,26 @@ async def handle_request(reader, writer, head, headers, body):
     raw_g = GUID_RE.search(path)
     if allow_online and raw_g and raw_g.group(0) in ALL_LIB_GUIDS:
         lg = raw_g.group(0)
-        ck = lib_key_of_guid(lg)
-        if ck is None:                      # 旧单库 → 默认取热门电影
-            ck = "hot_movie"
-        if path.startswith("/v/api/v1/item/") or path.startswith("/v/api/v1/mdb/"):
-            await fetch_douban_cat(ck)
-            await douban_guids(ck)
-            writer.write(json_response({"msg": "", "code": 0,
-                                        "data": fake_mdb_info(ck)}))
-            await writer.drain()
-            return
+        if lg == HGDJ_LIB_GUID:
+            if (path.startswith("/v/api/v1/item/")
+                    or path.startswith("/v/api/v1/mdb/")):
+                await fetch_hgdj_all()
+                writer.write(json_response({"msg": "", "code": 0,
+                                            "data": hgdj_lib_info()}))
+                await writer.drain()
+                return
+        else:
+            ck = lib_key_of_guid(lg)
+            if ck is None:                  # 旧单库 → 默认取热门电影
+                ck = "hot_movie"
+            if (path.startswith("/v/api/v1/item/")
+                    or path.startswith("/v/api/v1/mdb/")):
+                await fetch_douban_cat(ck)
+                await douban_guids(ck)
+                writer.write(json_response({"msg": "", "code": 0,
+                                            "data": fake_mdb_info(ck)}))
+                await writer.drain()
+                return
 
     # ---- 观看记录 / 继续播放 ----
     # 关键：本地影片的 play/record、play/quit、play/list 必须原样交给官方。
@@ -4098,13 +4977,13 @@ async def handle_request(reader, writer, head, headers, body):
         if path == "/v/api/v1/stream":
             kick_props_probe(gg)
             _log_play_req(path, body)
-            writer.write(json_response(synth_stream(gg)))
+            writer.write(json_response(synth_stream(gg, headers=headers)))
             await writer.drain()
             return
         if path in ("/v/api/v1/play/play", "/v/api/v1/play/quality"):
             kick_props_probe(gg)
             _log_play_req(path, body)
-            writer.write(json_response(synth_play(gg)))
+            writer.write(json_response(synth_play(gg, headers=headers)))
             await writer.drain()
             return
         if path.startswith("/v/api/v1/"):

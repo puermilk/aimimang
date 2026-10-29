@@ -27,5 +27,7 @@
  "online_users": [],
  "source_mode": "parallel",
  "source_limit": 0,
- "js_source_limit": 4
+ "js_source_limit": 4,
+ "hgdj_enabled": false,
+ "hgdj_url": "http://127.0.0.1:18098"
 }

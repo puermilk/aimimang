@@ -47,14 +47,19 @@ def _looks_m3u8(url):
     u = url.lower().split("?")[0]
     if u.endswith((".m3u8", ".m3u")):
         return True
-    if re.search(r"/share/|/detail|/vod|/index\.html|/\w+\.html?$", u):
+    if re.search(r"/share/|/detail|/vod|/play/|/index\.html|/\w+\.html?$", u):
         return False
     return True
 
 
 def playable_lines(play_url):
     """vod_play_url 里有多少条线路是直接可放的。
-    格式："集名$地址#集名$地址"，多线路以 $$$ 分隔。"""
+    格式："集名$地址#集名$地址"，多线路以 $$$ 分隔。
+    兼容只有裸 m3u8 地址、没有 "集名$" 前缀的站点。"""
+    raw = (play_url or "").strip()
+    if raw.startswith("http") and "$" not in raw:
+        parts = [x.strip() for x in re.split(r"[#\n]+", raw) if x.strip()]
+        return 1 if parts and all(_looks_m3u8(x) for x in parts[:3]) else 0
     n = 0
     for line in (play_url or "").split("$$$"):
         urls = []
