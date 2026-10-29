@@ -1115,10 +1115,12 @@ def _merge_online_items(cms_items, js_items, limit=8):
             q = groups.get(site) or []
             while q:
                 it = q.pop(0)
-                key = _norm_title(it.get("title") or "")
-                if key and key in seen:
+                # 去重键带上来源：同一部剧在不同采集站应各显示一条，
+                # 同时保留标题里的数字，避免“李卫当官1/2/3”被压成一条。
+                key = (site, _norm_hgdj(it.get("title") or ""))
+                if key[1] and key in seen:
                     continue
-                if key:
+                if key[1]:
                     seen.add(key)
                 out.append(it)
                 moved = True
