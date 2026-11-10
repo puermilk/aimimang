@@ -25,6 +25,18 @@ UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
       "(KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36")
 CHROMIUM = os.environ.get("AIMIMANG_CHROMIUM") or (
     "/usr/bin/chromium" if os.path.exists("/usr/bin/chromium") else "")
+DATA_DIR = os.environ.get("AIMIMANG_DATA", "/usr/local/trim_media_mitm/vip_data")
+LOG_FILE = os.path.join(DATA_DIR, "login.log")
+
+
+def log(*a):
+    try:
+        os.makedirs(DATA_DIR, exist_ok=True)
+        with open(LOG_FILE, "a", encoding="utf-8") as f:
+            f.write("%s %s\n" % (
+                time.strftime("%Y-%m-%d %H:%M:%S"), " ".join(str(x) for x in a)))
+    except Exception:
+        pass
 
 PLATFORMS = {
     "iqiyi": {
@@ -56,7 +68,8 @@ PLATFORMS = {
         "code": ["input[placeholder*='验证码']"],
         "send": ["input[type=button]", "text=获取验证码", "text=获取短信验证码"],
         "submit": ["input.login-submit", "text=登录"],
-        "agree": ["div.protocol i", "div.protocol span", "div.protocol",
+        "agree": ["q.checkbox", "input.J_mobileIsReadPrivacy",
+                   "div.protocol i", "div.protocol span", "div.protocol",
                    "input[type=checkbox]"],
         "auth": ["MIGU_UID"],
     },
@@ -141,7 +154,7 @@ def _wait_ready(page):
 
 
 def _capture_qr(page, spec):
-    """截一张二维码图（data URL）。找不到二维码返回空串。"""
+    """截一张二维码图。返回 (data_url, 是否精确截到二维码元素)。"""
     # 1) 精确选择器
     for frame in _frames(page):
         for sel in spec.get("qr") or []:
@@ -158,13 +171,12 @@ def _capture_qr(page, spec):
                     if not (80 <= w <= 520 and 80 <= h <= 520):
                         continue
                     try:
-                        png = el.screenshot(type="jpeg", quality=82)
-                        mime = "image/jpeg"
+                        png = el.screenshot(type="png")
                     except Exception:
                         png = el.screenshot()
-                        mime = "image/png"
-                    return "data:%s;base64,%s" % (
-                        mime, base64.b64encode(png).decode())
+                    png = _pad_qr(png)
+                    return ("data:image/jpeg;base64,%s" % (
+                        base64.b64encode(png).decode()), True)
             except Exception:
                 continue
     # 2) 兜底：截登录窗口中间一块（别回传整页 1MB 截图）
@@ -174,9 +186,27 @@ def _capture_qr(page, spec):
                 "y": 120, "width": 640, "height": 620}
         png = page.screenshot(full_page=False, clip=clip, type="jpeg",
                               quality=80)
-        return "data:image/jpeg;base64," + base64.b64encode(png).decode()
+        return ("data:image/jpeg;base64," + base64.b64encode(png).decode(),
+                False)
     except Exception:
-        return ""
+        return "", False
+
+
+def _pad_qr(png):
+    """给二维码补白边（很多扫码器需要安静区），PIL 不可用时原样返回。"""
+    try:
+        from io import BytesIO
+        from PIL import Image
+        im = Image.open(BytesIO(png)).convert("RGB")
+        pad = max(16, im.width // 10)
+        out = Image.new("RGB", (im.width + pad * 2, im.height + pad * 2),
+                        "white")
+        out.paste(im, (pad, pad))
+        buf = BytesIO()
+        out.save(buf, format="JPEG", quality=88)
+        return buf.getvalue()
+    except Exception:
+        return png
 
 
 def _cookie_names(context):
@@ -186,9 +216,35 @@ def _cookie_names(context):
         return set()
 
 
-def _logged(context, spec):
+def _logged(page, context, spec):
     names = _cookie_names(context)
-    return any(a in names for a in spec.get("auth") or [])
+    if any(a in names for a in spec.get("auth") or []):
+        return True
+    # 有些平台扫码后不写 cookie，而是把 iframe 跳到账号页；用页面文案兜底。
+    for frame in _frames(page):
+        try:
+            ls = frame.evaluate(
+                "() => { try { return Object.keys(localStorage); }"
+                " catch (e) { return []; } }")
+            if any(k in (ls or []) for k in ("userInfo", "USERINFO", "MIGU_UID")):
+                return True
+        except Exception:
+            pass
+        try:
+            txt = (frame.locator("body").inner_text(timeout=500) or "")
+            if "退出登录" in txt or "退出帐号" in txt:
+                return True
+        except Exception:
+            continue
+    return False
+
+
+def _auto_confirm(page):
+    """扫码后有些平台要在网页上再点一次确认；轮询时顺手点掉。"""
+    for text in ("确认登录", "确认授权", "同意并登录", "立即登录"):
+        if _click_any(page, ["text=" + text], force=True, timeout=700):
+            return True
+    return False
 
 
 def _mask_phone(phone):
@@ -242,14 +298,20 @@ class LoginSession:
         self.cmds.put(("stop", ""))
 
     def _set(self, **kw):
+        old = self.status.get("state")
         with self.lock:
             self.status.update(kw)
             self.status["ts"] = time.time()
+            new = self.status.get("state")
+        if old != new:
+            log(self.platform, "state", old, "->", new,
+                "|", str(self.status.get("message") or "")[:160])
 
     def _run(self):
         try:
             self._run_inner()
         except Exception as e:
+            log(self.platform, "ERROR", repr(e), traceback.format_exc()[:1200])
             self._set(state="error", message="登录窗口出错：%s" % repr(e)[:160])
         finally:
             self.alive = False
@@ -299,21 +361,34 @@ class LoginSession:
 
     def _qr_flow(self, page, ctx, state_path):
         _choose_qr(page, self.spec)
-        time.sleep(1.2)
-        qr = _capture_qr(page, self.spec)
-        self._set(state="qr", qr=qr, message="请用对应平台 App 扫码登录")
+        qr, exact = "", False
+        # 二维码是异步渲染的：先等它真出来，别把加载中的页面截图当二维码。
+        for _ in range(20):
+            if self.stop_event.is_set():
+                return
+            qr, exact = _capture_qr(page, self.spec)
+            if exact:
+                break
+            time.sleep(1.0)
+        self._set(state="qr" if qr else "starting", qr=qr,
+                  message=("请用对应平台 App 扫码登录" if exact
+                           else "二维码加载较慢，可稍等刷新或改用短信登录"))
+        log(self.platform, "qr ready exact=%s len=%d" % (exact, len(qr)))
         deadline = time.time() + 480
         last_refresh = time.time()
         while time.time() < deadline and not self.stop_event.is_set():
-            if _logged(ctx, self.spec):
+            if _logged(page, ctx, self.spec):
                 return self._finish(ctx, state_path)
-            if time.time() - last_refresh > 15:
-                new_qr = _capture_qr(page, self.spec)
-                if new_qr:
+            _auto_confirm(page)
+            if time.time() - last_refresh > 8:
+                new_qr, new_exact = _capture_qr(page, self.spec)
+                if new_qr and (new_exact or not exact):
                     self._set(qr=new_qr)
+                    exact = new_exact or exact
                 last_refresh = time.time()
             time.sleep(1.5)
         if not self.stop_event.is_set():
+            log(self.platform, "qr expired")
             self._set(state="expired", message="二维码已过期，请重新发起登录")
 
     def _sms_flow(self, page, ctx, state_path):
@@ -336,7 +411,7 @@ class LoginSession:
                   message="验证码已发送到 %s，请输入短信验证码" % _mask_phone(self.phone))
         deadline = time.time() + 480
         while time.time() < deadline and not self.stop_event.is_set():
-            if _logged(ctx, self.spec):
+            if _logged(page, ctx, self.spec):
                 return self._finish(ctx, state_path)
             try:
                 cmd, val = self.cmds.get(timeout=1.2)
@@ -357,7 +432,7 @@ class LoginSession:
             self._set(state="verifying", message="正在验证…")
             for _ in range(8):
                 time.sleep(1.0)
-                if _logged(ctx, self.spec):
+                if _logged(page, ctx, self.spec):
                     return self._finish(ctx, state_path)
             self._set(state="need_code", message="验证码可能不对，请重新输入")
         if not self.stop_event.is_set() and self.status.get("state") not in (
@@ -367,6 +442,8 @@ class LoginSession:
     def _finish(self, ctx, state_path):
         try:
             st = ctx.storage_state()
+            names = sorted({c.get("name") for c in st.get("cookies", [])})
+            log(self.platform, "login detected cookies=", ",".join(names))
             ok, msg = self.save_state(self.platform, st, state_path)
             if not ok:
                 self._set(state="error", message=msg)
