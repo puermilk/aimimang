@@ -760,6 +760,10 @@ def serve_playlist(self, tvid, media_only=False):
             "bid", d.get("bid"), "segs", len(iq_dash.seg_urls(d["m3u8"])))
         if media_only:
             return self._m3u8(media)
+        try:
+            prewarm_segments(tvid, d, 3)
+        except Exception:
+            pass
         return self._m3u8(_master_m3u8(
             tvid, sub=bool(d.get("sub")), bid=d.get("bid") or "600"))
     if iq_dash.is_drm(tvid):
@@ -1017,6 +1021,71 @@ def _fetch_seg(self, seg_url, tvid, idx=""):
     except (BrokenPipeError, ConnectionResetError):
         pass
 
+# 首段预取缓存：爱奇艺 CDN 冷连接偶尔要 30s，播放器等首个分片会以为卡死。
+# 在详情页预热/打开清单时后台抓前 3 段，播放时直接命中内存，做到秒开。
+_SEG_CACHE = {}
+_SEG_LOCK = threading.Lock()
+_SEG_TTL = 600
+_SEG_MAX = 40
+_SEG_PREFETCHING = set()
+
+
+def _seg_cache_get(tvid, idx, url):
+    with _SEG_LOCK:
+        e = _SEG_CACHE.get((str(tvid), str(idx)))
+    if not e:
+        return None
+    if time.time() - e["ts"] > _SEG_TTL or e["url"] != url:
+        return None
+    return e
+
+
+def _seg_cache_put(tvid, idx, url, body, ctype):
+    with _SEG_LOCK:
+        _SEG_CACHE[(str(tvid), str(idx))] = {
+            "url": url, "body": body, "ctype": ctype, "ts": time.time()}
+        if len(_SEG_CACHE) > _SEG_MAX:
+            for k, _v in sorted(_SEG_CACHE.items(),
+                                key=lambda kv: kv[1].get("ts") or 0
+                                )[:len(_SEG_CACHE) - _SEG_MAX]:
+                _SEG_CACHE.pop(k, None)
+
+
+def prewarm_segments(tvid, d, n=3, timeout=20):
+    """后台抓整集前 n 段；失败不影响播放。"""
+    import requests as rq
+    lines = [l.strip() for l in (d.get("m3u8") or "").splitlines()
+             if l.strip().startswith("http") and ".ts?" in l]
+    if not lines:
+        return
+
+    def one(i, u):
+        key = (str(tvid), str(i))
+        with _SEG_LOCK:
+            if key in _SEG_PREFETCHING:
+                return
+            _SEG_PREFETCHING.add(key)
+        try:
+            old = _seg_cache_get(tvid, i, u)
+            if old:
+                return
+            rr = rq.get(u, headers={"User-Agent": iq.h["User-Agent"],
+                                    "Referer": "https://www.iqiyi.com/"},
+                        timeout=timeout)
+            if rr.status_code in (200, 206) and rr.content:
+                _seg_cache_put(tvid, i, u, rr.content,
+                               rr.headers.get("Content-Type") or "video/mp2t")
+                log("seg prewarm ok", tvid, i, len(rr.content))
+        except Exception as e:
+            log("seg prewarm fail", tvid, i, str(e)[:80])
+        finally:
+            with _SEG_LOCK:
+                _SEG_PREFETCHING.discard(key)
+
+    for i, u in enumerate(lines[:n]):
+        threading.Thread(target=one, args=(i, u), daemon=True).start()
+
+
 def serve_segment(self, tvid):
     q = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
     idx = (q.get("i") or [""])[0]
@@ -1041,6 +1110,32 @@ def serve_segment(self, tvid):
                     extra.append((k, v))
             if extra:
                 seg = seg + "&" + urllib.parse.urlencode(extra)
+    if idx != "" and not self.headers.get("Range"):
+        hit = _seg_cache_get(tvid, idx, seg)
+        # 预取正在抓同一段时，等它完成，避免播放器再发一次一模一样的 CDN 请求
+        if not hit:
+            for _ in range(100):
+                with _SEG_LOCK:
+                    busy = (str(tvid), str(idx)) in _SEG_PREFETCHING
+                if not busy:
+                    break
+                time.sleep(0.2)
+                hit = _seg_cache_get(tvid, idx, seg)
+                if hit:
+                    break
+        if hit:
+            try:
+                self.send_response(200)
+                self.send_header("Content-Type", hit["ctype"] or "video/mp2t")
+                self.send_header("Content-Length", str(len(hit["body"])))
+                self.send_header("Accept-Ranges", "bytes")
+                self._cors()
+                self.end_headers()
+                self.wfile.write(hit["body"])
+                _last_seg[tvid] = time.time()
+                return
+            except Exception:
+                pass
     if iq_dash.is_dash_url(seg):
         _last_seg[tvid] = time.time()
         try:
@@ -1079,7 +1174,12 @@ def prewarm_first_episode(mac):
         return
     tvid = m.group(1)
     log("prewarm:", tvid)
-    iq_dash.get(tvid)
+    d = iq_dash.get(tvid)
+    if d:
+        try:
+            prewarm_segments(tvid, d, 3)
+        except Exception:
+            pass
 
 def history_prewarm():
     """按观看历史预热最近看过的爱奇艺集(让"继续观看"秒开)"""
@@ -1139,7 +1239,12 @@ def prewarm_mac(mac):
         return
     tvid = m.group(1)
     log("prewarm:", tvid)
-    iq_dash.get(tvid)
+    d = iq_dash.get(tvid)
+    if d:
+        try:
+            prewarm_segments(tvid, d, 3)
+        except Exception:
+            pass
 
 def next_ep_tvid(tvid):
     with _cache_lock:
