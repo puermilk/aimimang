@@ -7,6 +7,10 @@ REAL=/var/run/trim_media.real.sock
 U=/etc/systemd/system
 
 # 1) 先停掉接管进程，释放 socket
+for name in iqiyi migu mgtv; do
+    systemctl stop "trim-media-vip-$name.service" >/dev/null 2>&1
+    systemctl disable "trim-media-vip-$name.service" >/dev/null 2>&1
+done
 systemctl stop trim-media-mitm.service           >/dev/null 2>&1
 systemctl disable trim-media-mitm.service        >/dev/null 2>&1
 systemctl disable --now trim-media-mitm-watchdog.timer    >/dev/null 2>&1
@@ -19,6 +23,8 @@ systemctl stop trim-media-fty-update.timer       >/dev/null 2>&1
 
 # 2) 删单元文件
 rm -f "$U/trim-media-mitm.service" \
+      "$U/trim-media-vip-iqiyi.service" "$U/trim-media-vip-migu.service" \
+      "$U/trim-media-vip-mgtv.service" \
       "$U/trim-media-mitm-watchdog.service" "$U/trim-media-mitm-watchdog.timer" \
       "$U/trim-media-mitm-maintenance.service" "$U/trim-media-mitm-maintenance.timer" \
       "$U/trim-media-fty-update.service" "$U/trim-media-fty-update.timer"

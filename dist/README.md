@@ -6,17 +6,17 @@
 
 ## 最新版
 
-**`爱迷茫-1.3.0.fpk`**（2026-10-28）
+**`爱迷茫-2.0.0.fpk`**（2026-11-10 · 预览版）
 
-- 大小：5.5 MB
-- SHA-256：`d4a108d62df120d2b72eaa38f453681d8a0a1efe6089dfc037904a3c16515437`
+- 大小：52 MB（含 Playwright Python 驱动，浏览器用 NAS 自带 chromium）
+- SHA-256：`d5a294850df7adcdcd2c394d59a65d749d1db329261bdc546e2091f6e1118d1c`
 
 下载后建议先校验：
 
 ```bash
-sha256sum -c 爱迷茫-1.3.0.fpk.sha256
+sha256sum -c 爱迷茫-2.0.0.fpk.sha256
 # 或者
-sha256sum 爱迷茫-1.3.0.fpk
+sha256sum 爱迷茫-2.0.0.fpk
 ```
 
 ## 全部版本

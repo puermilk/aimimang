@@ -15,7 +15,10 @@ for f in mitm.py webui.py jsspider.py source_check.py ensure_takeover.sh watchdo
          update_fty.py update_fty.log watchdog.log maintenance.log pkg.log; do
     rm -f "$DIR/$f"
 done
-rm -rf "$DIR/lib" "$DIR/venv" "$DIR/runtime" "$DIR/__pycache__"
+rm -rf "$DIR/lib" "$DIR/venv" "$DIR/runtime" "$DIR/__pycache__" \
+       "$DIR/vip" "$DIR/vip_data"
 # conf/ 里的这些东西不是用户数据，而是老版本内置订阅的留档 —— 一并清掉
 rm -f "$DIR/conf/fty_tv.json" "$DIR/conf/fty_meta.json" "$DIR/conf/fty_usable.json"
+# 注意：conf/*_state.json（会员登录态）和 sources.json/config.json 属于用户数据，
+# 卸载不删除，重装后还能直接用。
 exit 0

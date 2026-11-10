@@ -35,6 +35,22 @@ for p in $PKGS; do
     done
 done
 
+# Playwright：2.0 VIP 源（咪咕 / 芒果）取 m3u8 用。只装 Python 驱动，
+# 浏览器复用 NAS 自带的 /usr/bin/chromium（由 systemd 的 AIMIMANG_CHROMIUM 指定），
+# 不把 400MB 的 Chromium 打进安装包。系统没有 playwright 时跳过，VIP 源仍可搜索。
+PW_SRC="${3:-/usr/local/lib/python3.11/dist-packages}"
+if [ -d "$PW_SRC/playwright" ]; then
+    for p in playwright greenlet pyee; do
+        [ -d "$PW_SRC/$p" ] && cp -a "$PW_SRC/$p" "$DST/"
+        for d in "$PW_SRC/$p"-*.dist-info; do
+            [ -d "$d" ] && cp -a "$d" "$DST/"
+        done
+    done
+    echo "已并入 playwright（VIP 源取流；浏览器用系统 chromium）"
+else
+    echo "警告：没找到 playwright —— 爱奇艺仍可播放，咪咕/芒果播放会提示缺组件" >&2
+fi
+
 # QuickJS：JS 蜘蛛（drpy2）引擎本体。只带 cp311 / x86_64 的 manylinux 扩展，
 # 与 fnOS 自带的 /usr/bin/python3（3.11）匹配；不匹配时 jsspider 会优雅降级。
 # 素材位置可覆盖：bash make_lib.sh [site-packages] [quickjs素材目录]

@@ -16,7 +16,13 @@
   "source_mode      : 采集源查询方式：priority=主用优先（旧行为，主用落空才查兜底），",
   "                   parallel=全部同时（主用+兜底一起查，所有启用的源都生效）",
   "source_limit     : 最多启用几个采集源（0=不限；按主用→兜底顺序取前 N 个）",
-  "js_source_limit  : 最多同时查几个 JS 源（0=不限；默认 4，避免一次启动太多引擎）"
+  "js_source_limit  : 最多同时查几个 JS 源（0=不限；默认 4，避免一次启动太多引擎）",
+  "",
+  "vip_unlocked      : 2.0 VIP 源（爱奇艺 / 咪咕 / 芒果）总开关，只能在配置页输入暗号开启",
+  "vip_iqiyi         : 爱奇艺在线源开关（需要自己的爱奇艺会员登录态）",
+  "vip_migu          : 咪咕视频在线源开关（需要自己的咪咕会员登录态）",
+  "vip_migu_live     : 咪咕电视直播开关（仅 vip_migu 打开时生效）",
+  "vip_mgtv          : 芒果TV在线源开关（需要自己的芒果TV会员登录态）"
  ],
  "write_allow_any": false,
  "write_allow_ip": [],
@@ -27,7 +33,18 @@
  "online_users": [],
  "source_mode": "parallel",
  "source_limit": 0,
- "js_source_limit": 4,
+ "js_source_limit": 0,
  "hgdj_enabled": false,
- "hgdj_url": "http://127.0.0.1:18098"
+ "hgdj_url": "http://127.0.0.1:18098",
+ "vip_unlocked": false,
+ "vip_iqiyi": true,
+ "vip_migu": true,
+ "vip_migu_live": false,
+ "vip_mgtv": true,
+ "vip_iqiyi_port": 8770,
+ "vip_migu_port": 8771,
+ "vip_mgtv_port": 8772,
+ "vip_iqiyi_state": "/usr/local/trim_media_mitm/conf/iqiyi_state.json",
+ "vip_migu_state": "/usr/local/trim_media_mitm/conf/migu_state.json",
+ "vip_mgtv_state": "/usr/local/trim_media_mitm/conf/mgtv_state.json"
 }

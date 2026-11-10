@@ -560,9 +560,70 @@ pre{background:#0d1117;border:1px solid var(--line);border-radius:8px;
 <div class="note"><b>免责声明</b>：本插件只是一个「播放器侧」的中转工具，不含任何影视内容，
 也不内置任何片源。你在下面填写的源地址、以及由此播放的内容，均由你自己提供并自负其责；
 请仅接入你有权访问的内容，并遵守当地法律法规与源站的服务条款。作者不对任何第三方源的
-合法性、可用性和内容负责。如不同意，请不要使用本插件。</div>
+合法性、可用性和内容负责。<br>
+<b>关于爱奇艺 / 咪咕 VIP 源</b>：插件只做本机协议中转，<b>不提供账号、不共享会员、不破解 DRM</b>；
+能看什么完全取决于<b>你自己账号的会员权限</b>，请先确认你已开通对应会员。
+会员内容请仅限个人观看，不要录制、传播或用于商业用途。如不同意，请不要使用本插件。</div>
 
 <div id="warn" style="display:none"></div>
+
+<div class="card" id="vipCard">
+  <h2>VIP 源（2.0）· 爱奇艺 / 咪咕</h2>
+  <div class="sub" style="margin:-6px 0 10px;font-size:12.5px">
+    把爱奇艺、咪咕视频、芒果TV作为三路在线源接进来：搜索、点开、选集、播放与普通源一致。
+    <b>需要你自己的会员账号登录态</b>（未登录 / 非会员只能看免费内容或提示无权限）。
+    本功能默认关闭，输入暗号后才能开启。
+  </div>
+  <div id="vipLockBox">
+    <div class="row">
+      <span style="color:var(--dim)">暗号</span>
+      <input id="vipCode" type="password" placeholder="输入暗号后开启 VIP 源"
+             style="width:220px" autocomplete="off">
+      <button id="btnVipUnlock">开启</button>
+      <span class="tag dim" id="vipLockTag">未开启</span>
+    </div>
+    <div class="sub" style="margin:8px 0 0;font-size:12px">
+      暗号只在 NAS 本地校验，不会上传；打开后不会自动下载任何内容。
+    </div>
+  </div>
+  <div id="vipPanel" style="display:none">
+    <div class="row" style="gap:18px">
+      <label style="display:flex;align-items:center;gap:6px;color:var(--fg)">
+        <input type="checkbox" id="vipIqiyi" style="width:auto"> 开启爱奇艺
+      </label>
+      <label style="display:flex;align-items:center;gap:6px;color:var(--fg)">
+        <input type="checkbox" id="vipMigu" style="width:auto"> 开启咪咕
+      </label>
+      <label style="display:flex;align-items:center;gap:6px;color:var(--fg)">
+        <input type="checkbox" id="vipMiguLive" style="width:auto"> 看直播电视
+      </label>
+      <label style="display:flex;align-items:center;gap:6px;color:var(--fg)">
+        <input type="checkbox" id="vipMgtv" style="width:auto"> 开启芒果
+      </label>
+      <span class="tag dim" id="vipState">未开启</span>
+    </div>
+    <div class="row" style="margin-top:10px">
+      <button class="ghost" id="btnVipSave">保存 VIP 开关</button>
+      <span style="color:var(--dim);font-size:12px">
+        「看直播电视」仅在「开启咪咕」时生效，提供咪咕电视直播频道。
+      </span>
+    </div>
+    <div id="vipMsg" class="sub" style="margin:8px 0 0;font-size:12px"></div>
+  </div>
+</div>
+
+<div class="card">
+  <h2>手机投屏 · 大屏看片</h2>
+  <div class="sub" style="margin:-6px 0 10px;font-size:12.5px">
+    在线源同样支持<b>手机投屏</b>：手机不用装额外插件，片源由 NAS 中转，投屏后手机关屏也不影响播放。
+  </div>
+  <ol style="margin:0 0 0 18px;padding:0;color:var(--fg);font-size:13px">
+    <li>手机安装<b>飞牛影视 App</b>，登录同一台 NAS；电视 / 投影与 NAS 接同一局域网。</li>
+    <li>在 App 里搜索并点开在线影片，进入播放页。</li>
+    <li>点播放器右上角的<b>投屏</b>图标，选择电视 / 投影设备即可。</li>
+    <li>爱奇艺 / 咪咕 / 芒果内容需先在 NAS 上配置<b>对应会员</b>的登录态；投屏画质受会员档位与网络影响。</li>
+  </ol>
+</div>
 
 <div class="card">
   <h2>导入 TVBox 配置地址</h2>
@@ -616,8 +677,11 @@ pre{background:#0d1117;border:1px solid var(--line);border-radius:8px;
     <input id="srcLimit" type="number" min="0" max="100" value="0" style="width:80px">
     <span style="color:var(--dim)">个（0=不限）</span>
     <span style="color:var(--dim)">JS 源最多</span>
-    <input id="jsLimit" type="number" min="0" max="50" value="4" style="width:70px">
-    <span style="color:var(--dim)">个（0=不限）</span>
+    <input id="jsLimit" type="number" min="0" max="50" value="0" style="width:70px">
+    <span style="color:var(--dim)">个（0=不限，默认全部）</span>
+  </div>
+  <div class="sub" style="margin:8px 0 0;font-size:12px">
+    2.0 起搜索不再截断结果：单个源返回多少就展示多少；VIP 源不占采集源名额。
   </div>
   <div id="srcPolicyMsg" class="sub" style="margin:8px 0 0;font-size:12px"></div>
 </div>
@@ -682,7 +746,9 @@ pre{background:#0d1117;border:1px solid var(--line);border-radius:8px;
 
 <script>
 var S = {primary:[], fallback:[], js:[], VIS:"admin", ALLOW:[], USERS:[],
-         MODE:"priority", LIMIT:0, JLIMIT:4};
+         MODE:"priority", LIMIT:0, JLIMIT:0,
+         VIP:{unlocked:false, iqiyi:true, migu:true, migu_live:false,
+              mgtv:true}};
 var LAST = null;
 var UNLOCK_CMD = "curl -s --unix-socket /var/run/trim_media.sock -X POST " +
   "-H 'Content-Type: application/json' " +
@@ -784,11 +850,53 @@ function renderJsTable(){
   document.getElementById("tblJs").innerHTML = h;
 }
 
+function renderVip(){
+  var v = S.VIP || {};
+  var lockBox = document.getElementById("vipLockBox");
+  var panel = document.getElementById("vipPanel");
+  var tag = document.getElementById("vipLockTag");
+  var st = document.getElementById("vipState");
+  if (lockBox) lockBox.style.display = v.unlocked ? "none" : "";
+  if (panel) panel.style.display = v.unlocked ? "" : "none";
+  if (tag) {
+    tag.className = "tag " + (v.unlocked ? "ok" : "dim");
+    tag.textContent = v.unlocked ? "已开启" : "未开启";
+  }
+  if (st) {
+    var names = [];
+    if (v.iqiyi) names.push("爱奇艺");
+    if (v.migu) names.push("咪咕");
+    if (v.migu && v.migu_live) names.push("直播电视");
+    if (v.mgtv) names.push("芒果");
+    st.className = "tag " + (v.unlocked && names.length ? "ok" : "dim");
+    st.textContent = names.length ? ("当前：" + names.join(" / ")) : "当前：未启用任何 VIP 源";
+  }
+  var iq = document.getElementById("vipIqiyi");
+  var mg = document.getElementById("vipMigu");
+  var lv = document.getElementById("vipMiguLive");
+  var tv = document.getElementById("vipMgtv");
+  if (iq) iq.checked = !!v.iqiyi;
+  if (mg) mg.checked = !!v.migu;
+  if (lv) { lv.checked = !!v.migu_live; lv.disabled = !v.migu; }
+  if (tv) tv.checked = !!v.mgtv;
+}
+
+function applyVip(d){
+  if (!d) return;
+  if (d.vip_unlocked !== undefined) {
+    S.VIP = {unlocked: !!d.vip_unlocked,
+             iqiyi: !!d.vip_iqiyi, migu: !!d.vip_migu,
+             migu_live: !!d.vip_migu_live, mgtv: !!d.vip_mgtv};
+  }
+  renderVip();
+}
+
 function draw(){
   renderTable("primary", "tblPrimary");
   renderTable("fallback", "tblFallback");
   renderJsTable();
   renderSourcePolicy();
+  renderVip();
   document.getElementById("cli").textContent =
     "# 看当前生效的源\n" +
     "curl -s --unix-socket /var/run/trim_media.sock http://x/v/__mitm__/sources\n\n" +
@@ -966,7 +1074,10 @@ function load(){
     S.USERS = (d.users||[]).slice();
     S.MODE = d.source_mode || "priority";
     S.LIMIT = (d.source_limit === undefined ? 0 : d.source_limit);
-    S.JLIMIT = (d.js_source_limit === undefined ? 4 : d.js_source_limit);
+    S.JLIMIT = (d.js_source_limit === undefined ? 0 : d.js_source_limit);
+    S.VIP = {unlocked: !!d.vip_unlocked, iqiyi: !!d.vip_iqiyi,
+             migu: !!d.vip_migu, migu_live: !!d.vip_migu_live,
+             mgtv: !!d.vip_mgtv};
     if (d.file) document.getElementById("file").textContent = d.file;
     if (d.write) drawWrite(d.write);
     if (d.msg) log(d.msg);
@@ -998,6 +1109,38 @@ document.getElementById("srcLimit").oninput = function(){
 };
 document.getElementById("jsLimit").oninput = function(){
   S.JLIMIT = Math.max(0, Math.min(50, parseInt(this.value, 10) || 0));
+};
+
+document.getElementById("btnVipUnlock").onclick = function(){
+  var btn = this; btn.disabled = true;
+  var code = (document.getElementById("vipCode").value || "").trim();
+  if (!code){ log("先输入暗号。"); btn.disabled = false; return; }
+  api("/v/__mitm__/api/vip", {code: code}).then(function(d){
+    applyVip(d);
+    log(d.ok ? "VIP 源已开启：勾选要启用的源后点「保存 VIP 开关」。"
+             : ("开启失败：" + (d.msg || "暗号不对")));
+    if (d.ok) document.getElementById("vipCode").value = "";
+  }).catch(function(e){ log("开启失败：" + e.message); })
+    .then(function(){ btn.disabled = false; });
+};
+
+document.getElementById("btnVipSave").onclick = function(){
+  var btn = this; btn.disabled = true;
+  api("/v/__mitm__/api/vip", {
+    iqiyi: document.getElementById("vipIqiyi").checked,
+    migu: document.getElementById("vipMigu").checked,
+    migu_live: document.getElementById("vipMiguLive").checked,
+    mgtv: document.getElementById("vipMgtv").checked
+  }).then(function(d){
+    applyVip(d);
+    log(d.ok ? "VIP 开关已保存，搜索立即生效。" : ("保存失败：" + (d.msg || "")));
+  }).catch(function(e){ log("保存失败：" + e.message); })
+    .then(function(){ btn.disabled = false; });
+};
+
+document.getElementById("vipMigu").onchange = function(){
+  var lv = document.getElementById("vipMiguLive");
+  if (lv) { lv.disabled = !this.checked; if (!this.checked) lv.checked = false; }
 };
 
 document.getElementById("btnAddP").onclick = function(){ S.primary.push(blank()); draw(); };

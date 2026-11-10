@@ -30,6 +30,14 @@ if [ -d "$SRC/runtime" ]; then
     mkdir -p "$DIR/runtime"
     cp -f "$SRC"/runtime/*.js "$DIR/runtime/" 2>/dev/null || true
 fi
+# 2.0 VIP 采集桥（爱奇艺 / 咪咕 / 芒果）。代码随包覆盖；conf/ 里的登录态
+# （*_state.json）属于用户数据，永不覆盖；vip_data 只放缓存和 worker 临时文件。
+if [ -d "$SRC/vip" ]; then
+    rm -rf "$DIR/vip"
+    cp -a "$SRC/vip" "$DIR/vip"
+fi
+mkdir -p "$DIR/vip_data"
+chmod 700 "$DIR/vip_data" 2>/dev/null || true
 # conf/：默认文件随包更新，但用户改过的 sources.json / config.json 不覆盖
 #       （那是他自己的源配置和写操作来源策略，覆盖了就白改了）
 if [ -d "$SRC/conf" ]; then
@@ -57,6 +65,10 @@ bash "$DIR/setup_units.sh"
 systemctl enable trim-media-mitm.service >/dev/null 2>&1
 systemctl enable trim-media-mitm-watchdog.timer >/dev/null 2>&1
 systemctl enable trim-media-mitm-maintenance.timer >/dev/null 2>&1
+for name in iqiyi migu mgtv; do
+    systemctl enable "trim-media-vip-$name.service" >/dev/null 2>&1
+    systemctl restart "trim-media-vip-$name.service" >/dev/null 2>&1
+done
 
 # 3) 拉起接管
 systemctl restart trim-media-mitm.service

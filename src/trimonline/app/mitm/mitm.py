@@ -805,8 +805,10 @@ def _js_playable(u):
                                   ".m4a", ".aac", ".ts", "m3u8?"))
 
 
-async def js_query(site, kw, limit=3):
-    """一个 JS 源的搜索：search → detail →（必要时）play 免嗅"""
+async def js_query(site, kw, limit=0):
+    """一个 JS 源的搜索：search → detail →（必要时）play 免嗅。
+
+    limit<=0 表示不限制条数（2.0 起默认全部返回；前端不再截断）。"""
     if jsspider is None:
         return []
     try:
@@ -815,7 +817,7 @@ async def js_query(site, kw, limit=3):
         log("js search err", site.get("name"), repr(e)[:100])
         return []
     out = []
-    for it in lst[:limit]:
+    for it in (lst if limit <= 0 else lst[:limit]):
         vid = str(it.get("vod_id") or "")
         name = (it.get("vod_name") or "").strip()
         if not vid or not name:
@@ -877,8 +879,8 @@ async def js_query(site, kw, limit=3):
     return out
 
 
-async def js_search_all(kw, cap=4, timeout=12.0):
-    """并行查所有 JS 源（限 cap 个；cap<=0 表示不限），整体超时保护。
+async def js_search_all(kw, cap=0, timeout=12.0):
+    """并行查所有 JS 源（cap<=0 表示不限），整体超时保护。
     注意：超时只是「不等了」，被丢下的线程还会把这次请求跑完，属正常现象。"""
     sites = [s for s in JS_SITES if s.get("kind") == "js"]
     if cap and cap > 0:
@@ -2582,8 +2584,21 @@ _CONFIG_NOTE = [
     "source_mode      : 采集源查询方式：priority=主用优先（旧行为，主用落空才查兜底），",
     "                   parallel=全部同时（主用+兜底一起查，所有启用的源都生效）",
     "source_limit     : 最多启用几个采集源（0=不限；按主用→兜底顺序取前 N 个）",
-    "js_source_limit  : 最多同时查几个 JS 源（0=不限；默认 4，避免一次启动太多引擎）",
+    "js_source_limit  : 最多同时查几个 JS 源（0=不限；默认 0=全部）",
+    "",
+    "vip_unlocked      : 2.0 VIP 源（爱奇艺 / 咪咕）总开关，只能由配置页输入暗号打开",
+    "vip_iqiyi         : 爱奇艺在线源开关（需爱奇艺会员账号登录态）",
+    "vip_migu          : 咪咕视频在线源开关（需咪咕会员账号登录态）",
+    "vip_migu_live     : 咪咕电视直播开关（仅 vip_migu 打开时生效）",
+    "vip_mgtv          : 芒果TV在线源开关（需芒果TV会员账号登录态）",
+    "vip_iqiyi_port    : 爱奇艺采集桥本机端口（默认 8770）",
+    "vip_migu_port     : 咪咕采集桥本机端口（默认 8771）",
+    "vip_mgtv_port     : 芒果TV采集桥本机端口（默认 8772）",
 ]
+
+# 2.0 VIP 源暗号：只存 SHA-256，配置页和 config.json 里都不会出现明文。
+# 暗号 = aimimang（用户要求，不要把明文写进页面或日志）。
+VIP_CODE_SHA256 = hashlib.sha256(b"aimimang").hexdigest()
 
 DEFAULT_CONFIG = {
     "_note": _CONFIG_NOTE,
@@ -2598,7 +2613,20 @@ DEFAULT_CONFIG = {
     # 旧配置没有这三个字段时按旧行为（主用优先）走；新装模板默认「全部同时」。
     "source_mode": "priority",
     "source_limit": 0,
-    "js_source_limit": 4,
+    "js_source_limit": 0,
+    # 2.0 VIP 源：暗号解锁后才生效；默认两个源都开、直播默认关。
+    "vip_unlocked": False,
+    "vip_code_sha256": VIP_CODE_SHA256,
+    "vip_iqiyi": True,
+    "vip_migu": True,
+    "vip_migu_live": False,
+    "vip_mgtv": True,
+    "vip_iqiyi_port": 8770,
+    "vip_migu_port": 8771,
+    "vip_mgtv_port": 8772,
+    "vip_iqiyi_state": "/usr/local/trim_media_mitm/conf/iqiyi_state.json",
+    "vip_migu_state": "/usr/local/trim_media_mitm/conf/migu_state.json",
+    "vip_mgtv_state": "/usr/local/trim_media_mitm/conf/mgtv_state.json",
     # 红果短剧：由本机 HGDJ 服务提供元数据与在线播放流。
     "hgdj_enabled": False,
     "hgdj_url": HGDJ_DEFAULT_URL,
@@ -2666,6 +2694,7 @@ def save_config(patch):
         return False, "写不了 %s：%s" % (CONFIG_FILE, repr(e)[:120])
     _POLICY_CACHE["ts"] = 0.0
     _SOURCE_CFG_CACHE["ts"] = 0.0
+    _VIP_CACHE.update({"ts": 0.0, "cfg": None})
     return True, "已保存"
 
 
@@ -2818,7 +2847,7 @@ def online_allowed(user):
 
 
 _SOURCE_CFG_CACHE = {"ts": 0.0, "mode": "priority",
-                     "limit": 0, "js_limit": 4}
+                     "limit": 0, "js_limit": 0}
 
 
 def _limit_int(v, default, maximum):
@@ -2840,7 +2869,7 @@ def source_policy():
     if mode not in ("priority", "parallel"):
         mode = "priority"
     limit = _limit_int(cfg.get("source_limit"), 0, 100)
-    js_limit = _limit_int(cfg.get("js_source_limit"), 4, 50)
+    js_limit = _limit_int(cfg.get("js_source_limit"), 0, 50)
     _SOURCE_CFG_CACHE.update({"ts": now, "mode": mode, "limit": limit,
                               "js_limit": js_limit})
     return mode, limit, js_limit
@@ -2849,13 +2878,15 @@ def source_policy():
 def cms_plan():
     """按配置把主用/兜底整理成本次真正启用的两级源。
     返回 (mode, primary, fallback, js_limit)。
-    source_limit 按「主用在前、兜底在后」截断；0 表示不限。"""
+    source_limit 按「主用在前、兜底在后」截断；0 表示不限。
+    VIP 源（爱奇艺/咪咕）单独追加，不占用 source_limit 名额。"""
     mode, limit, js_limit = source_policy()
     p = list(CMS_PRIMARY)
     f = list(CMS_FALLBACK)
     if limit > 0:
         p = p[:limit]
         f = f[:max(0, limit - len(p))]
+    p = p + vip_sites()
     return mode, p, f, js_limit
 
 
@@ -2865,10 +2896,142 @@ def source_policy_payload():
             "js_source_limit": js_limit}
 
 
+# ------------------------------------------------------------ 2.0 VIP 源 ---
+# 爱奇艺 / 咪咕的采集桥跑在本机 127.0.0.1，只有暗号解锁后才作为采集源参与
+# 搜索。桥本身不带账号：播放走的是用户自己填进 conf/ 的会员登录态。
+_VIP_CACHE = {"ts": 0.0, "cfg": None}
+
+
+def _vip_cfg():
+    now = time.time()
+    if _VIP_CACHE["cfg"] is not None and now - _VIP_CACHE["ts"] < 2.0:
+        return _VIP_CACHE["cfg"]
+    cfg = load_config()
+    _VIP_CACHE.update({"ts": now, "cfg": cfg})
+    return cfg
+
+
+def _vip_port(v, default):
+    try:
+        n = int(v)
+    except (TypeError, ValueError):
+        n = default
+    return n if 1 <= n <= 65535 else default
+
+
+def vip_sites(cfg=None):
+    """当前配置下要注入的 VIP 采集源；未解锁返回空列表。"""
+    cfg = cfg if isinstance(cfg, dict) else _vip_cfg()
+    if not cfg.get("vip_unlocked"):
+        return []
+    out = []
+    ip = _vip_port(cfg.get("vip_iqiyi_port"), 8770)
+    mp = _vip_port(cfg.get("vip_migu_port"), 8771)
+    tp = _vip_port(cfg.get("vip_mgtv_port"), 8772)
+    if cfg.get("vip_iqiyi", True):
+        out.append({"name": "爱奇艺VIP",
+                    "api": "http://127.0.0.1:%d/api.php/provide/vod/" % ip,
+                    "referer": "https://www.iqiyi.com/",
+                    "lines": "multi", "kind": "cms", "timeout": 20})
+    if cfg.get("vip_migu", True):
+        out.append({"name": "咪咕VIP",
+                    "api": "http://127.0.0.1:%d/api.php/provide/vod/" % mp,
+                    "referer": "https://www.miguvideo.com/",
+                    "lines": "multi", "kind": "cms", "timeout": 20})
+        if cfg.get("vip_migu_live"):
+            out.append({"name": "咪咕直播",
+                        "api": "http://127.0.0.1:%d/live.php/provide/vod/" % mp,
+                        "referer": "https://www.miguvideo.com/",
+                        "lines": "single", "kind": "cms", "timeout": 15})
+    if cfg.get("vip_mgtv", True):
+        out.append({"name": "芒果VIP",
+                    "api": "http://127.0.0.1:%d/api.php/provide/vod/" % tp,
+                    "referer": "https://www.mgtv.com/",
+                    "lines": "multi", "kind": "cms", "timeout": 20})
+    return out
+
+
+def _vip_apply_locked(req, cfg, unlocked):
+    """生成 vip_apply 要落盘的 patch；不合法返回 (None, 错误文案)。"""
+    patch = {}
+    if "iqiyi" in req:
+        patch["vip_iqiyi"] = bool(req.get("iqiyi"))
+    if "migu" in req:
+        patch["vip_migu"] = bool(req.get("migu"))
+    if "migu_live" in req:
+        patch["vip_migu_live"] = bool(req.get("migu_live"))
+    if "mgtv" in req:
+        patch["vip_mgtv"] = bool(req.get("mgtv"))
+    if not unlocked:
+        if any(k in req for k in ("iqiyi", "migu", "migu_live", "mgtv")):
+            return None, "VIP 功能还没解锁：先输入暗号"
+        return {}, ""
+    # 直播依赖咪咕：咪咕关掉时直播一并关掉，避免出现一个点不开的源。
+    if patch.get("vip_migu") is False:
+        patch["vip_migu_live"] = False
+    return patch, ""
+
+
+def vip_apply(req):
+    """配置页调用：校验暗号 / 保存开关。返回 (ok, msg, cfg)。"""
+    req = req if isinstance(req, dict) else {}
+    cfg = load_config()
+    unlocked = bool(cfg.get("vip_unlocked"))
+    patch = {}
+
+    code = str(req.get("code") or "").strip()
+    if code:
+        if hashlib.sha256(code.encode("utf-8")).hexdigest() != VIP_CODE_SHA256:
+            return False, "暗号不对，VIP 功能没有开启", cfg
+        if not unlocked:
+            unlocked = True
+            patch["vip_unlocked"] = True
+            # 首次解锁：两个源都打开，直播保持关闭（用户自己勾）。
+            cfg = dict(cfg)
+            cfg["vip_iqiyi"] = True
+            cfg["vip_migu"] = True
+            cfg["vip_migu_live"] = False
+            cfg["vip_mgtv"] = True
+
+    if req.get("lock"):
+        unlocked = False
+        patch["vip_unlocked"] = False
+
+    p, err = _vip_apply_locked(req, cfg, unlocked)
+    if err:
+        return False, err, cfg
+    patch.update(p)
+
+    if patch:
+        ok, msg = save_config(patch)
+        if not ok:
+            return False, msg, load_config()
+        cfg = load_config()
+    return True, "VIP 设置已保存", cfg
+
+
+def vip_status_payload():
+    """配置页展示用：绝不下发暗号哈希。"""
+    cfg = load_config()
+    sites = vip_sites(cfg)
+    return {
+        "vip_unlocked": bool(cfg.get("vip_unlocked")),
+        "vip_iqiyi": bool(cfg.get("vip_iqiyi", True)),
+        "vip_migu": bool(cfg.get("vip_migu", True)),
+        "vip_migu_live": bool(cfg.get("vip_migu_live")),
+        "vip_mgtv": bool(cfg.get("vip_mgtv", True)),
+        "vip_iqiyi_port": _vip_port(cfg.get("vip_iqiyi_port"), 8770),
+        "vip_migu_port": _vip_port(cfg.get("vip_migu_port"), 8771),
+        "vip_mgtv_port": _vip_port(cfg.get("vip_mgtv_port"), 8772),
+        "vip_sites": [s["name"] for s in sites],
+    }
+
+
 def public_config():
-    """给配置页的配置副本：绝不把 write_token 发回浏览器。"""
+    """给配置页的配置副本：绝不把 write_token / 暗号哈希发回浏览器。"""
     cfg = load_config()
     cfg.pop("write_token", None)
+    cfg.pop("vip_code_sha256", None)
     return cfg
 
 
@@ -3100,7 +3263,7 @@ def _do_test(sites, keyword, timeout, source_limit=None,
     if js_source_limit is None:
         js_source_limit = cur_js
     source_limit = _limit_int(source_limit, 0, 100)
-    js_source_limit = _limit_int(js_source_limit, 4, 50)
+    js_source_limit = _limit_int(js_source_limit, 0, 50)
     clean, jsclean = [], []
     for s in (sites if isinstance(sites, list) else []):
         if not isinstance(s, dict):
@@ -4382,6 +4545,7 @@ async def handle_request(reader, writer, head, headers, body):
             "fallback": CMS_FALLBACK,
             "js": JS_SITES,
             **source_policy_payload(),
+            **vip_status_payload(),
         }))
         await writer.drain()
         return
@@ -4444,7 +4608,7 @@ async def handle_request(reader, writer, head, headers, body):
                 patch["source_limit"] = _limit_int(req.get("source_limit"), 0, 100)
             if "js_source_limit" in req:
                 patch["js_source_limit"] = _limit_int(
-                    req.get("js_source_limit"), 4, 50)
+                    req.get("js_source_limit"), 0, 50)
             if patch:
                 ok2, msg2 = save_config(patch)
                 if not ok2:
@@ -4459,7 +4623,8 @@ async def handle_request(reader, writer, head, headers, body):
                                         "fallback": CMS_FALLBACK,
                                         "js": JS_SITES,
                                         **visibility_payload(),
-                                        **source_policy_payload()},
+                                        **source_policy_payload(),
+                                        **vip_status_payload()},
                                        extra=ensure_cookie(headers)))
         elif path == "/v/__mitm__/api/sources":
             writer.write(json_response({"ok": True, "msg": _SOURCES_MSG,
@@ -4472,7 +4637,8 @@ async def handle_request(reader, writer, head, headers, body):
                                         "engine": jsspider.info() if jsspider else
                                                   {"available": False, "why": _JS_ERR},
                                         **visibility_payload(),
-                                        **source_policy_payload()},
+                                        **source_policy_payload(),
+                                        **vip_status_payload()},
                                        extra=ensure_cookie(headers)))
         elif path == "/v/__mitm__/api/users":
             writer.write(json_response({"ok": True, **visibility_payload()},
@@ -4502,7 +4668,7 @@ async def handle_request(reader, writer, head, headers, body):
                 patch["source_limit"] = _limit_int(req.get("source_limit"), 0, 100)
             if "js_source_limit" in req:
                 patch["js_source_limit"] = _limit_int(
-                    req.get("js_source_limit"), 4, 50)
+                    req.get("js_source_limit"), 0, 50)
             # 便捷写法：把「当前请求的来源 IP」直接加进白名单
             if req.get("add_ip"):
                 cfg = load_config()
@@ -4516,12 +4682,24 @@ async def handle_request(reader, writer, head, headers, body):
                                         "config": public_config(),
                                         **visibility_payload(),
                                         **source_policy_payload(),
+                                        **vip_status_payload(),
                                         **write_state(headers)},
+                                       extra=ensure_cookie(headers)))
+        elif path == "/v/__mitm__/api/vip" and method == "POST":
+            req = _json_body(body)
+            ok, msg, _cfg = vip_apply(req)
+            writer.write(json_response({"ok": ok, "msg": msg,
+                                        **vip_status_payload()},
+                                       extra=ensure_cookie(headers)))
+        elif path == "/v/__mitm__/api/vip":
+            writer.write(json_response({"ok": True,
+                                        **vip_status_payload()},
                                        extra=ensure_cookie(headers)))
         elif path == "/v/__mitm__/api/config":
             writer.write(json_response({"ok": True, "config": public_config(),
                                         **visibility_payload(),
                                         **source_policy_payload(),
+                                        **vip_status_payload(),
                                         **write_state(headers)},
                                        extra=ensure_cookie(headers)))
         elif path == "/v/__mitm__/api/import" and method == "POST":

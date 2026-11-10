@@ -73,6 +73,33 @@ Unit=trim-media-mitm-maintenance.service
 WantedBy=timers.target
 EOF
 
+# 2.0 VIP 采集桥：爱奇艺 / 咪咕 / 芒果。只监听 127.0.0.1，由主程序按暗号开关决定
+# 是否把它们注入搜索；不打开时这些进程只占几十 MB 内存，不产生外部请求。
+for pair in "iqiyi:8770" "migu:8771" "mgtv:8772"; do
+    name=${pair%%:*}
+    cat > "$U/trim-media-vip-$name.service" <<EOF
+[Unit]
+Description=aimimang VIP bridge ($name)
+After=network.target trim-media-mitm.service
+Wants=trim-media-mitm.service
+
+[Service]
+Type=simple
+Environment=AIMIMANG_CONF=$DIR/conf
+Environment=AIMIMANG_DATA=$DIR/vip_data
+Environment=PYTHONPATH=$DIR/lib
+Environment=PLAYWRIGHT_BROWSERS_PATH=/usr/local/trim_media_mitm/vip_data/ms-playwright
+Environment=AIMIMANG_CHROMIUM=/usr/bin/chromium
+WorkingDirectory=$DIR/vip/$name
+ExecStart=/usr/bin/python3 $DIR/vip/$name/bridge.py
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
+EOF
+done
+
 chmod +x "$DIR"/*.sh 2>/dev/null
 systemctl daemon-reload
 exit 0
