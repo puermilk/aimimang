@@ -46,7 +46,7 @@ sha256sum -c SHA256SUMS.txt
 
 ```bash
 # 方式一：命令行（路径换成你的实际位置）
-appcenter-cli install-fpk /vol1/1000/MUSCI/爱迷茫-2.0.0.fpk
+sudo appcenter-cli install-fpk /vol1/1000/MUSCI/爱迷茫-2.0.0.fpk
 ```
 
 方式二：飞牛应用中心 → 侧边栏底部「手动安装」→ 选择 `.fpk` 文件。

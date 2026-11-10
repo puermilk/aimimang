@@ -98,7 +98,7 @@ TVBox 配置里 `type: 3` 的 drpy 规则站点也能真跑起来，不用装 Ja
 **方式一 · 命令行**
 
 ```bash
-appcenter-cli install-fpk /vol1/1000/MUSCI/爱迷茫-2.0.0.fpk    # 换成你自己的实际路径
+sudo appcenter-cli install-fpk /vol1/1000/MUSCI/爱迷茫-2.0.0.fpk    # 换成你自己的实际路径
 ```
 
 **方式二 · 应用中心界面**
