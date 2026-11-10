@@ -4,6 +4,12 @@ __pycache__/
 .DS_Store
 *.log
 
+# 会员登录态 / Cookie：只属于用户本机，绝不入库、绝不进安装包
+storage_state.json
+*_state.json
+cookies*.json
+*_cookies.json
+
 # FPK 安装包：只在 dist/ 保留发布件，仓库根目录的构建产物不入库
 *.fpk
 *.fpk.sha256

@@ -75,6 +75,23 @@ __routes["/v/__mitm__/api/sources"] = {
   engine:{available:true, why:"drpy2 + cheerio + QuickJS 就绪",
           engine:"QuickJS + drpy2", stats:{calls:0, errors:0, contexts:0}}
 };
+__routes["/v/__mitm__/api/vip"] = {
+  ok:true, vip_unlocked:true, vip_iqiyi:true, vip_migu:true,
+  vip_migu_live:false, vip_mgtv:true,
+  vip_sites:["爱奇艺VIP","咪咕VIP","芒果VIP"],
+  vip_states:{
+    iqiyi:{path:"/tmp/conf/iqiyi_state.json", configured:true, cookies:21, updated:1},
+    migu:{path:"/tmp/conf/migu_state.json", configured:false, cookies:0, updated:0},
+    mgtv:{path:"/tmp/conf/mgtv_state.json", configured:false, cookies:0, updated:0}},
+  vip_health:{
+    iqiyi:{port:8770, running:true, logged:true, why:""},
+    migu:{port:8771, running:true, logged:false, why:""},
+    mgtv:{port:8772, running:true, logged:false, why:""}}};
+__routes["/v/__mitm__/api/vip/state"] = {
+  ok:true, msg:"测试登录态已保存",
+  vip_unlocked:true, vip_iqiyi:true, vip_migu:true,
+  vip_migu_live:false, vip_mgtv:true,
+  vip_states:{}, vip_health:{}};
 __routes["/v/__mitm__/api/import"] = {
   ok:true,
   kept:[{name:"测试采集", label:"普通采集", api:"http://a/api.php/provide/vod/",
@@ -176,6 +193,17 @@ ck((E("srcPolicyMsg").textContent || "").indexOf("先查主用") >= 0,
 E("srcLimit").oninput.call({value:"9"});
 E("jsLimit").oninput.call({value:"3"});
 ck(S.LIMIT === 9 && S.JLIMIT === 3, "数量输入会更新 S.LIMIT / S.JLIMIT");
+
+// 9) VIP 源：暗号入口 + 三平台登录态导入界面
+ck(!!E("btnVipUnlock").onclick, "「暗号开启」按钮已绑定处理函数");
+ck(!!E("btnVipSave").onclick, "「保存 VIP 开关」按钮已绑定处理函数");
+var vl = E("vipLoginBox").innerHTML || "";
+ck(vl.indexOf("导入登录态") >= 0, "三个平台都有「导入登录态」按钮");
+ck(vl.indexOf("芒果TV") >= 0 && vl.indexOf("爱奇艺") >= 0 && vl.indexOf("咪咕") >= 0,
+   "登录界面包含爱奇艺 / 咪咕 / 芒果TV");
+ck(vl.indexOf("登录态已导入") >= 0, "已配置的平台显示登录态状态");
+ck((E("vipState").textContent || "").indexOf("爱奇艺") >= 0,
+   "VIP 开关状态显示当前启用的源");
 
 __out.join("\n");
 """

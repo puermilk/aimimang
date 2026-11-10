@@ -555,7 +555,8 @@ pre{background:#0d1117;border:1px solid var(--line);border-radius:8px;
 <body><div class="wrap">
 
 <h1>爱迷茫</h1>
-<div class="sub">飞牛影视在线源插件 · 源设置（<span class="mono" id="file">conf/sources.json</span>）</div>
+<div class="sub">飞牛影视在线源插件 · <b style="color:var(--ok)">2.0.0 预览版</b> · 源设置（<span class="mono" id="file">conf/sources.json</span>）<br>
+  VIP 源（爱奇艺 / 咪咕 / 芒果）在下方，需先输入暗号开启。</div>
 
 <div class="note"><b>免责声明</b>：本插件只是一个「播放器侧」的中转工具，不含任何影视内容，
 也不内置任何片源。你在下面填写的源地址、以及由此播放的内容，均由你自己提供并自负其责；
@@ -568,7 +569,7 @@ pre{background:#0d1117;border:1px solid var(--line);border-radius:8px;
 <div id="warn" style="display:none"></div>
 
 <div class="card" id="vipCard">
-  <h2>VIP 源（2.0）· 爱奇艺 / 咪咕</h2>
+  <h2>VIP 源（2.0）· 爱奇艺 / 咪咕 / 芒果 · 暗号开启</h2>
   <div class="sub" style="margin:-6px 0 10px;font-size:12.5px">
     把爱奇艺、咪咕视频、芒果TV作为三路在线源接进来：搜索、点开、选集、播放与普通源一致。
     <b>需要你自己的会员账号登录态</b>（未登录 / 非会员只能看免费内容或提示无权限）。
@@ -608,6 +609,13 @@ pre{background:#0d1117;border:1px solid var(--line);border-radius:8px;
         「看直播电视」仅在「开启咪咕」时生效，提供咪咕电视直播频道。
       </span>
     </div>
+    <div class="sep">会员登录（只导入登录态，不保存账号密码）</div>
+    <div class="sub" style="margin:-4px 0 8px;font-size:12.5px">
+      在电脑浏览器登录对应平台后，用 Cookie 导出扩展导出 <span class="mono">storage_state.json</span>
+      （或 <span class="mono">{"cookies":[...]}</span>），在下面选择文件导入。
+      登录态只保存在本机 <span class="mono">conf/*_state.json</span>，不会上传、不会打进安装包。
+    </div>
+    <div id="vipLoginBox"></div>
     <div id="vipMsg" class="sub" style="margin:8px 0 0;font-size:12px"></div>
   </div>
 </div>
@@ -748,7 +756,7 @@ pre{background:#0d1117;border:1px solid var(--line);border-radius:8px;
 var S = {primary:[], fallback:[], js:[], VIS:"admin", ALLOW:[], USERS:[],
          MODE:"priority", LIMIT:0, JLIMIT:0,
          VIP:{unlocked:false, iqiyi:true, migu:true, migu_live:false,
-              mgtv:true}};
+              mgtv:true}, VIPSTATES:{}, VIPHEALTH:{}};
 var LAST = null;
 var UNLOCK_CMD = "curl -s --unix-socket /var/run/trim_media.sock -X POST " +
   "-H 'Content-Type: application/json' " +
@@ -850,6 +858,69 @@ function renderJsTable(){
   document.getElementById("tblJs").innerHTML = h;
 }
 
+var VIP_NAMES = {iqiyi:"爱奇艺", migu:"咪咕", mgtv:"芒果TV"};
+
+function renderVipLogin(){
+  var box = document.getElementById("vipLoginBox");
+  if (!box) return;
+  var states = S.VIPSTATES || {}, health = S.VIPHEALTH || {};
+  var h = "";
+  ["iqiyi","migu","mgtv"].forEach(function(p){
+    var st = states[p] || {};
+    var hh = health[p] || {};
+    var name = VIP_NAMES[p] || p;
+    var stateTag = st.configured
+      ? '<span class="tag ok">登录态已导入 · ' + (st.cookies||0) + ' cookies</span>'
+      : '<span class="tag dim">未导入登录态</span>';
+    var runTag = hh.running
+      ? '<span class="tag ' + (hh.logged ? "ok" : "warn") + '">采集桥运行中 · '
+        + (hh.logged ? "已识别登录" : "未识别登录") + '</span>'
+      : '<span class="tag bad">采集桥未运行</span>';
+    h += '<div class="row" style="gap:10px;margin-top:8px;padding-top:8px;'
+       + 'border-top:1px solid var(--line)">'
+       + '<b style="min-width:58px">' + name + '</b>' + stateTag + runTag
+       + '<button class="ghost" onclick="document.getElementById(\'vipFile_' + p + '\').click()">导入登录态</button>'
+       + '<input type="file" id="vipFile_' + p + '" accept=".json,application/json" '
+       + 'style="display:none" onchange="vipPick(\'' + p + '\',this)">'
+       + '<button class="ghost" onclick="vipClear(\'' + p + '\')">清空</button>'
+       + '<span style="color:var(--dim);font-size:11.5px">' + esc(st.path||"") + '</span>'
+       + '</div>';
+  });
+  box.innerHTML = h;
+}
+
+function vipPick(platform, input){
+  var f = input.files && input.files[0];
+  if (!f) return;
+  var r = new FileReader();
+  r.onload = function(){
+    var obj;
+    try { obj = JSON.parse(String(r.result)); }
+    catch(e){ log("登录态文件不是合法 JSON：" + e.message); return; }
+    api("/v/__mitm__/api/vip/state", {platform:platform, state:obj})
+      .then(function(d){
+        applyVip(d);
+        log(d.msg || (d.ok ? "登录态已保存" : "保存失败"));
+        return refreshVip();
+      }).catch(function(e){ log("导入登录态失败：" + e.message); });
+  };
+  r.readAsText(f, "utf-8");
+  input.value = "";
+}
+
+function vipClear(platform){
+  if (!confirm("清空 " + (VIP_NAMES[platform]||platform) + " 的登录态？")) return;
+  api("/v/__mitm__/api/vip/state", {platform:platform, clear:true})
+    .then(function(d){ applyVip(d); log(d.msg||"已清空"); return refreshVip(); })
+    .catch(function(e){ log("清空失败：" + e.message); });
+}
+
+function refreshVip(){
+  return api("/v/__mitm__/api/vip").then(function(d){
+    applyVip(d);
+  }).catch(function(){});
+}
+
 function renderVip(){
   var v = S.VIP || {};
   var lockBox = document.getElementById("vipLockBox");
@@ -883,12 +954,15 @@ function renderVip(){
 
 function applyVip(d){
   if (!d) return;
+  if (d.vip_states) S.VIPSTATES = d.vip_states;
+  if (d.vip_health) S.VIPHEALTH = d.vip_health;
   if (d.vip_unlocked !== undefined) {
     S.VIP = {unlocked: !!d.vip_unlocked,
              iqiyi: !!d.vip_iqiyi, migu: !!d.vip_migu,
              migu_live: !!d.vip_migu_live, mgtv: !!d.vip_mgtv};
   }
   renderVip();
+  renderVipLogin();
 }
 
 function draw(){
@@ -1078,6 +1152,7 @@ function load(){
     S.VIP = {unlocked: !!d.vip_unlocked, iqiyi: !!d.vip_iqiyi,
              migu: !!d.vip_migu, migu_live: !!d.vip_migu_live,
              mgtv: !!d.vip_mgtv};
+    S.VIPSTATES = d.vip_states || {};
     if (d.file) document.getElementById("file").textContent = d.file;
     if (d.write) drawWrite(d.write);
     if (d.msg) log(d.msg);
@@ -1089,6 +1164,7 @@ function load(){
                                   : ("引擎不可用：" + (e.why||"未知"));
     }
     draw();
+    refreshVip();
   }).catch(function(e){ log("读取配置失败：" + e.message); });
 }
 

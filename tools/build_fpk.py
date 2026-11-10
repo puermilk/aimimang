@@ -72,6 +72,14 @@ def main():
     # 带 checksum 的 manifest 只在打包时临时生成，不落在源码树里
     out_manifest = os.path.join(tempfile.mkdtemp(prefix="fpkbuild-"), "manifest")
 
+    # 0) 硬门禁：会员登录态 / Cookie 只属于用户本机，绝不允许打进安装包。
+    for root, _dirs, files in os.walk(APP_DIR):
+        for name in files:
+            if (name == "storage_state.json" or name == "cookies.json"
+                    or name.endswith("_state.json")):
+                raise SystemExit("拒绝打包：发现登录态文件 %s"
+                                 % os.path.join(root, name))
+
     # 1) 依赖目录
     if "--no-lib" not in sys.argv:
         print("### 1) 生成 app/mitm/lib")

@@ -3010,6 +3010,132 @@ def vip_apply(req):
     return True, "VIP 设置已保存", cfg
 
 
+# 三个平台的登录态文件：只接受 storage_state 结构（cookies 数组），
+# 不接收账号密码。写入 conf/ 并 chmod 600，桥进程按 mtime 自动重载。
+_VIP_PLATFORM_FILES = {
+    "iqiyi": ("vip_iqiyi_state", "iqiyi_state.json"),
+    "migu": ("vip_migu_state", "migu_state.json"),
+    "mgtv": ("vip_mgtv_state", "mgtv_state.json"),
+}
+_VIP_PLATFORM_NAMES = {"iqiyi": "爱奇艺", "migu": "咪咕", "mgtv": "芒果TV"}
+
+
+def vip_state_path(platform, cfg=None):
+    cfg = cfg if isinstance(cfg, dict) else load_config()
+    spec = _VIP_PLATFORM_FILES.get(str(platform or "").lower())
+    if not spec:
+        return ""
+    default = os.path.join(CONF_DIR, spec[1])
+    val = str(cfg.get(spec[0]) or "")
+    builtin = "/usr/local/trim_media_mitm/conf/" + spec[1]
+    # 默认值跟着 CONF_DIR 走：非标准安装目录 / 自检临时目录也不会写错地方。
+    return default if (not val or val == builtin) else val
+
+
+def vip_states_payload(cfg=None):
+    """登录态是否已配置（只报数量/时间，不回传 cookie 内容）。"""
+    cfg = cfg if isinstance(cfg, dict) else load_config()
+    out = {}
+    for platform in _VIP_PLATFORM_FILES:
+        path = vip_state_path(platform, cfg)
+        item = {"path": path, "configured": False, "cookies": 0,
+                "updated": 0}
+        try:
+            st = json.load(open(path, encoding="utf-8"))
+            ck = st.get("cookies") if isinstance(st, dict) else None
+            if isinstance(ck, list) and ck:
+                item["configured"] = True
+                item["cookies"] = len(ck)
+                item["updated"] = int(os.path.getmtime(path))
+        except Exception:
+            pass
+        out[platform] = item
+    return out
+
+
+def vip_import_state(platform, state):
+    """保存浏览器导出的登录态；非法数据不落盘。返回 (ok, msg)。"""
+    platform = str(platform or "").lower()
+    if platform not in _VIP_PLATFORM_FILES:
+        return False, "不认识的平台：%s" % platform
+    if isinstance(state, str):
+        try:
+            state = json.loads(state)
+        except Exception:
+            return False, "登录态不是合法 JSON"
+    if not isinstance(state, dict):
+        return False, "登录态格式不对：需要 storage_state JSON"
+    ck = state.get("cookies")
+    if not isinstance(ck, list) or not ck:
+        return False, "登录态里没有 cookies；请导出完整的 storage_state.json"
+    for c in ck:
+        if not isinstance(c, dict) or not c.get("name") or "value" not in c:
+            return False, "cookies 条目格式不对（至少要有 name / value）"
+    path = vip_state_path(platform)
+    try:
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        tmp = path + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(state, f, ensure_ascii=False)
+        os.chmod(tmp, 0o600)
+        os.replace(tmp, path)
+    except Exception as e:
+        return False, "保存登录态失败：%s" % repr(e)[:120]
+    return True, "%s登录态已保存（%d 条 cookie）" % (
+        _VIP_PLATFORM_NAMES[platform], len(ck))
+
+
+def vip_clear_state(platform):
+    platform = str(platform or "").lower()
+    if platform not in _VIP_PLATFORM_FILES:
+        return False, "不认识的平台：%s" % platform
+    path = vip_state_path(platform)
+    try:
+        os.remove(path)
+    except FileNotFoundError:
+        pass
+    except Exception as e:
+        return False, "删除登录态失败：%s" % repr(e)[:120]
+    return True, "%s登录态已清空" % _VIP_PLATFORM_NAMES[platform]
+
+
+def _vip_health_sync(port):
+    try:
+        with urllib.request.urlopen(
+                "http://127.0.0.1:%d/health" % port, timeout=1.5) as r:
+            return json.loads(r.read().decode("utf-8", "replace"))
+    except Exception as e:
+        return {"ok": 0, "why": repr(e)[:80]}
+
+
+async def vip_health_payload():
+    """采集桥是否在跑 + 平台登录态是否被桥认可。只用于配置页展示。"""
+    cfg = load_config()
+    ports = {
+        "iqiyi": _vip_port(cfg.get("vip_iqiyi_port"), 8770),
+        "migu": _vip_port(cfg.get("vip_migu_port"), 8771),
+        "mgtv": _vip_port(cfg.get("vip_mgtv_port"), 8772),
+    }
+    got = await asyncio.gather(*[
+        asyncio.to_thread(_vip_health_sync, p) for p in ports.values()
+    ], return_exceptions=True)
+    out = {}
+    for (platform, port), health in zip(ports.items(), got):
+        if isinstance(health, Exception):
+            health = {"ok": 0, "why": repr(health)[:80]}
+        login = health.get("login") if isinstance(health, dict) else None
+        logged = bool(isinstance(login, dict) and (
+            login.get("P00001") or login.get("cookies")
+            or login.get("has_mgnd_session")))
+        out[platform] = {
+            "port": port,
+            "running": bool(isinstance(health, dict) and health.get("ok")),
+            "logged": logged,
+            "why": (health or {}).get("why", "") if isinstance(health, dict) else "",
+        }
+    return out
+
+
 def vip_status_payload():
     """配置页展示用：绝不下发暗号哈希。"""
     cfg = load_config()
@@ -3024,6 +3150,7 @@ def vip_status_payload():
         "vip_migu_port": _vip_port(cfg.get("vip_migu_port"), 8771),
         "vip_mgtv_port": _vip_port(cfg.get("vip_mgtv_port"), 8772),
         "vip_sites": [s["name"] for s in sites],
+        "vip_states": vip_states_payload(cfg),
     }
 
 
@@ -4691,8 +4818,20 @@ async def handle_request(reader, writer, head, headers, body):
             writer.write(json_response({"ok": ok, "msg": msg,
                                         **vip_status_payload()},
                                        extra=ensure_cookie(headers)))
+        elif path == "/v/__mitm__/api/vip/state" and method == "POST":
+            req = _json_body(body)
+            platform = str(req.get("platform") or "").lower()
+            if req.get("clear"):
+                ok, msg = vip_clear_state(platform)
+            else:
+                ok, msg = vip_import_state(platform, req.get("state"))
+            writer.write(json_response({"ok": ok, "msg": msg,
+                                        "vip_health": await vip_health_payload(),
+                                        **vip_status_payload()},
+                                       extra=ensure_cookie(headers)))
         elif path == "/v/__mitm__/api/vip":
             writer.write(json_response({"ok": True,
+                                        "vip_health": await vip_health_payload(),
                                         **vip_status_payload()},
                                        extra=ensure_cookie(headers)))
         elif path == "/v/__mitm__/api/config":

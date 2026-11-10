@@ -29,8 +29,9 @@ TVBox 配置里 `type: 3` 的 drpy 规则站点也能真跑起来，不用装 Ja
 1. 打开配置页 `http://<NAS>:5666/v/__mitm__/config`；
 2. 在「VIP 源（2.0）」里输入暗号 **`aimimang`**；
 3. 分别勾选「开启爱奇艺 / 开启咪咕 / 开启芒果」，咪咕可再勾「看直播电视」；
-4. 把对应平台的会员登录态放到 `conf/iqiyi_state.json`、`conf/migu_state.json`、
-   `conf/mgtv_state.json`（格式为 `{"cookies":[...]}`）。
+4. 在页面「会员登录」里导入对应平台的 `storage_state.json`（或
+   `{"cookies":[...]}`），只写到本机 `conf/*_state.json`；
+   **安装包和源码仓库都不包含任何 Cookie / 登录态**。
 
 - **不提供账号、不共享会员、不破解 DRM**；能看什么取决于你自己账号的会员权限。
 - VIP 源只监听 `127.0.0.1`，不占普通采集源名额；未解锁时完全不参与搜索。

@@ -83,6 +83,27 @@ class VipTest(unittest.TestCase):
         self.assertNotIn("vip_code_sha256", pub)
         self.assertTrue(pub.get("vip_unlocked"))
 
+    def test_import_login_state_writes_private_file(self):
+        st = {"cookies": [{"name": "P00001", "value": "x", "domain": ".iqiyi.com"}]}
+        ok, msg = mitm.vip_import_state("iqiyi", st)
+        self.assertTrue(ok, msg)
+        path = mitm.vip_state_path("iqiyi")
+        self.assertEqual(os.path.dirname(path), self.tmp.name)
+        self.assertEqual(json.load(open(path))["cookies"][0]["name"], "P00001")
+        self.assertEqual(os.stat(path).st_mode & 0o777, 0o600)
+        self.assertTrue(mitm.vip_states_payload()["iqiyi"]["configured"])
+
+    def test_import_rejects_cookie_free_json(self):
+        ok, _msg = mitm.vip_import_state("migu", {"hello": 1})
+        self.assertFalse(ok)
+        self.assertFalse(os.path.exists(mitm.vip_state_path("migu")))
+
+    def test_clear_login_state(self):
+        mitm.vip_import_state("mgtv", {"cookies": [{"name": "a", "value": "b"}]})
+        ok, _msg = mitm.vip_clear_state("mgtv")
+        self.assertTrue(ok)
+        self.assertFalse(os.path.exists(mitm.vip_state_path("mgtv")))
+
     def test_merge_zero_limit_returns_everything(self):
         cms = [{"guid": "a%d" % i, "title": "片%d" % i,
                 "ancestor_name": "站A"} for i in range(30)]
@@ -121,7 +142,8 @@ class PageTest(unittest.TestCase):
     def test_page_has_unlock_live_and_cast_copy(self):
         page = webui.PAGE
         for needle in ("暗号", "开启爱奇艺", "开启咪咕", "开启芒果",
-                       "看直播电视", "手机投屏", "免责声明", "会员"):
+                       "看直播电视", "手机投屏", "免责声明", "会员",
+                       "导入登录态", "storage_state"):
             self.assertIn(needle, page, "配置页缺少：%s" % needle)
 
     def test_secret_code_not_hardcoded_in_page(self):
