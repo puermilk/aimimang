@@ -196,6 +196,8 @@ ck(S.LIMIT === 9 && S.JLIMIT === 3, "数量输入会更新 S.LIMIT / S.JLIMIT");
 
 // 9) VIP 源：暗号入口 + 三平台登录态导入界面
 ck(!!E("btnVipUnlock").onclick, "「暗号开启」按钮已绑定处理函数");
+ck(!!E("btnVipLock").onclick, "「关闭 VIP」按钮已绑定处理函数");
+ck(E("vipLockBox").style.display !== "none", "暗号输入框始终可见（已开启也不隐藏）");
 ck(!!E("btnVipSave").onclick, "「保存 VIP 开关」按钮已绑定处理函数");
 var vl = E("vipLoginBox").innerHTML || "";
 ck(vl.indexOf("导入登录态") >= 0, "三个平台都有「导入登录态」按钮");

@@ -581,6 +581,7 @@ pre{background:#0d1117;border:1px solid var(--line);border-radius:8px;
       <input id="vipCode" type="password" placeholder="输入暗号后开启 VIP 源"
              style="width:220px" autocomplete="off">
       <button id="btnVipUnlock">开启</button>
+      <button class="ghost" id="btnVipLock" style="display:none">关闭 VIP</button>
       <span class="tag dim" id="vipLockTag">未开启</span>
     </div>
     <div class="sub" style="margin:8px 0 0;font-size:12px">
@@ -927,8 +928,13 @@ function renderVip(){
   var panel = document.getElementById("vipPanel");
   var tag = document.getElementById("vipLockTag");
   var st = document.getElementById("vipState");
-  if (lockBox) lockBox.style.display = v.unlocked ? "none" : "";
+  if (lockBox) lockBox.style.display = "";
   if (panel) panel.style.display = v.unlocked ? "" : "none";
+  var lockBtn = document.getElementById("btnVipLock");
+  if (lockBtn) lockBtn.style.display = v.unlocked ? "" : "none";
+  var code = document.getElementById("vipCode");
+  if (code) code.placeholder = v.unlocked
+    ? "已开启；输入暗号可重新验证" : "输入暗号后开启 VIP 源";
   if (tag) {
     tag.className = "tag " + (v.unlocked ? "ok" : "dim");
     tag.textContent = v.unlocked ? "已开启" : "未开启";
@@ -1197,6 +1203,16 @@ document.getElementById("btnVipUnlock").onclick = function(){
              : ("开启失败：" + (d.msg || "暗号不对")));
     if (d.ok) document.getElementById("vipCode").value = "";
   }).catch(function(e){ log("开启失败：" + e.message); })
+    .then(function(){ btn.disabled = false; });
+};
+
+document.getElementById("btnVipLock").onclick = function(){
+  if (!confirm("关闭 VIP 源？关闭后三路 VIP 源立即从搜索中移除，登录态文件保留。")) return;
+  var btn = this; btn.disabled = true;
+  api("/v/__mitm__/api/vip", {lock: true}).then(function(d){
+    applyVip(d);
+    log(d.ok ? "VIP 源已关闭。" : ("关闭失败：" + (d.msg || "")));
+  }).catch(function(e){ log("关闭失败：" + e.message); })
     .then(function(){ btn.disabled = false; });
 };
 
