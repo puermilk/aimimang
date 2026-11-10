@@ -321,7 +321,7 @@ _HGDJ_CFG = {"ts": 0.0, "enabled": False, "base": HGDJ_DEFAULT_URL}
 
 # 咪咕电视直播：独立伪媒体库（不混在搜索结果里）
 MIGU_LIVE_LIB_GUID = "on" + hashlib.md5(b"fnv-migu-live").hexdigest()[:30]
-MIGU_LIVE_LIB_NAME = "咪咕直播"
+MIGU_LIVE_LIB_NAME = "MI 直播"
 _MIGU_LIVE = {"ts": 0.0, "guids": []}
 
 # 豆瓣榜单分类 → 伪媒体库（每个分类一个独立库，侧栏分别显示）
@@ -925,6 +925,7 @@ async def js_query(site, kw, limit=0):
             "overview": strip_html(det.get("vod_content") or it.get("vod_content") or ""),
             "pic": (it.get("vod_pic") or det.get("vod_pic") or "").strip(),
             "site": site["name"],
+            "display": site.get("display"),
             "referer": ref_hint or site.get("referer") or "",
             "remarks": (it.get("vod_remarks") or det.get("vod_remarks") or "").strip(),
             "eps": eps,
@@ -996,6 +997,7 @@ async def query_site(site, kw, sem):
                 "overview": strip_html(it.get("vod_content") or ""),
                 "pic": pic,
                 "site": site["name"],
+                "display": site.get("display"),
                 "referer": site["referer"],
                 "remarks": (it.get("vod_remarks") or "").strip(),
                 "eps": eps,
@@ -1060,13 +1062,22 @@ def _bg_collect(t, qkey):
     t.add_done_callback(_cb)
 
 
-_VIP_ITEM_ORDER = {"爱奇艺VIP": 0, "咪咕VIP": 1, "芒果VIP": 2}
+_VIP_ITEM_ORDER = {"AI": 0, "MI": 1, "MANG": 2}
 
 
 def _vip_first_sort(items):
     """三个 VIP 源固定排在最前（AI/MI/MANG），其余保持原顺序。"""
     if not items:
         return items
+    # 旧缓存/旧记录里可能还是平台汉字名，先统一成 AI/MI/MANG。
+    for it in items:
+        if not isinstance(it, dict):
+            continue
+        an = str(it.get("ancestor_name") or "")
+        head, sep, rest = an.partition(" · ")
+        disp = _vip_display_site(head)
+        if disp != head:
+            it["ancestor_name"] = disp + (sep + rest if sep else "")
 
     def _rank(it):
         an = str(it.get("ancestor_name") or "").split(" · ", 1)[0]
@@ -1625,7 +1636,7 @@ async def fetch_migu_live_all(force=False):
         rec.update({
             "title": name, "site": MIGU_LIVE_LIB_NAME,
             "pic": it.get("vod_pic") or "", "referer": "https://www.miguvideo.com/",
-            "overview": "咪咕电视直播频道", "remarks": it.get("vod_remarks") or "直播",
+            "overview": "MI 电视直播频道", "remarks": it.get("vod_remarks") or "直播",
             "eps": [{"name": "直播", "url": u}],
             "resolved_at": int(time.time()), "live": True,
         })
@@ -1657,7 +1668,7 @@ def migu_live_lib_info():
         "auto_progress_thumb": 0, "last_update_time": int(time.time()),
         "sort_num": 0, "type": "Movie", "number_of_episodes": n,
         "number_of_seasons": 0, "season_number": 0, "episode_number": 0,
-        "overview": "咪咕电视直播频道", "vote_average": "0", "genres": [],
+        "overview": "MI 电视直播频道", "vote_average": "0", "genres": [],
         "content_ratings": "", "runtime": 0, "is_favorite": 0,
         "is_watched": 0, "watched_ts": 0, "can_play": 1, "play_error": "",
         "parent_guid": "", "ancestor_guid": "", "ancestor_name": "",
@@ -2245,6 +2256,25 @@ def hgdj_synth_play(guid, rec, headers=None):
 
 
 # --------------------------------------------------------- 伪造响应构造 ---
+_VIP_DISPLAY = {
+    "爱奇艺VIP": "AI", "咪咕VIP": "MI", "芒果VIP": "MANG",
+    "咪咕直播": "MI 直播",
+    "AI": "AI", "MI": "MI", "MANG": "MANG",
+}
+
+
+def _vip_display_site(site):
+    """内部源名 -> 页面显示名；AI / MI / MANG 不再显示平台汉字名。"""
+    s = str(site or "")
+    return _VIP_DISPLAY.get(s, s)
+
+
+def _rec_display_site(rec):
+    rec = rec or {}
+    d = str(rec.get("display") or "")
+    return d or _vip_display_site(rec.get("site"))
+
+
 def _is_vip_rec(rec):
     site = str((rec or {}).get("site") or "")
     return site in ("爱奇艺VIP", "咪咕VIP", "芒果VIP") or site in ("AI", "MI", "MANG")
@@ -2326,7 +2356,7 @@ def build_item(guid, rec):
         "play_error": "" if eps else "暂无片源",
         "parent_guid": (season_guid_of(series) if (is_ep and series)
                         else (series if is_season else "")),
-        "ancestor_guid": "", "ancestor_name": rec.get("site", ""),
+        "ancestor_guid": "", "ancestor_name": _rec_display_site(rec),
         "ancestor_category": "Movie" if typ == "Movie" else "TV",
         "play_item_guid": "", "logic_type": 0,
         # 红果短剧走直链 MP4，让前端按 RawFile 播放而不是拼 m3u8
@@ -2350,7 +2380,7 @@ def to_search_item(guid, rec):
     eps = rec.get("eps") or []
     n = len(eps)
     is_tv = n > 1 or bool(rec.get("tv"))
-    site_remarks = rec.get("site", "") + (
+    site_remarks = _rec_display_site(rec) + (
         (" · " + rec["remarks"]) if rec.get("remarks") else "")
     return {
         "guid": guid, "lan": "zh-CN", "imdb_id": "", "tv_title": "",
@@ -2853,14 +2883,14 @@ _CONFIG_NOTE = [
     "source_limit     : 最多启用几个采集源（0=不限；按主用→兜底顺序取前 N 个）",
     "js_source_limit  : 最多同时查几个 JS 源（0=不限；默认 0=全部）",
     "",
-    "vip_unlocked      : 2.0 VIP 源（爱奇艺 / 咪咕）总开关，只能由配置页输入暗号打开",
-    "vip_iqiyi         : 爱奇艺在线源开关（需爱奇艺会员账号登录态）",
-    "vip_migu          : 咪咕视频在线源开关（需咪咕会员账号登录态）",
-    "vip_migu_live     : 咪咕电视直播开关（仅 vip_migu 打开时生效）",
-    "vip_mgtv          : 芒果TV在线源开关（需芒果TV会员账号登录态）",
-    "vip_iqiyi_port    : 爱奇艺采集桥本机端口（默认 8770）",
-    "vip_migu_port     : 咪咕采集桥本机端口（默认 8771）",
-    "vip_mgtv_port     : 芒果TV采集桥本机端口（默认 8772）",
+    "vip_unlocked      : 2.0 VIP 源（AI / MI / MANG）总开关，只能由配置页输入暗号打开",
+    "vip_iqiyi         : AI 在线源开关（需 AI 会员账号登录态）",
+    "vip_migu          : MI 在线源开关（需 MI 会员账号登录态）",
+    "vip_migu_live     : MI 电视直播开关（仅 vip_migu 打开时生效）",
+    "vip_mgtv          : MANG 在线源开关（需 MANG 会员账号登录态）",
+    "vip_iqiyi_port    : AI 采集桥本机端口（默认 8770）",
+    "vip_migu_port     : MI 采集桥本机端口（默认 8771）",
+    "vip_mgtv_port     : MANG 采集桥本机端口（默认 8772）",
 ]
 
 # 2.0 VIP 源暗号：只存 SHA-256，配置页和 config.json 里都不会出现明文。
@@ -3198,18 +3228,18 @@ def vip_sites(cfg=None):
     mp = _vip_port(cfg.get("vip_migu_port"), 8771)
     tp = _vip_port(cfg.get("vip_mgtv_port"), 8772)
     if cfg.get("vip_iqiyi", True):
-        out.append({"name": "爱奇艺VIP",
+        out.append({"name": "爱奇艺VIP", "display": "AI",
                     "api": "http://127.0.0.1:%d/api.php/provide/vod/" % ip,
                     "referer": "https://www.iqiyi.com/",
                     "lines": "multi", "kind": "cms", "timeout": 20})
     if cfg.get("vip_migu", True):
-        out.append({"name": "咪咕VIP",
+        out.append({"name": "咪咕VIP", "display": "MI",
                     "api": "http://127.0.0.1:%d/api.php/provide/vod/" % mp,
                     "referer": "https://www.miguvideo.com/",
                     "lines": "multi", "kind": "cms", "timeout": 20})
         # 直播不再作为搜索源，改成独立媒体库（见 MIGU_LIVE_LIB_GUID）。
     if cfg.get("vip_mgtv", True):
-        out.append({"name": "芒果VIP",
+        out.append({"name": "芒果VIP", "display": "MANG",
                     "api": "http://127.0.0.1:%d/api.php/provide/vod/" % tp,
                     "referer": "https://www.mgtv.com/",
                     "lines": "multi", "kind": "cms", "timeout": 20})
@@ -3282,7 +3312,7 @@ _VIP_PLATFORM_FILES = {
     "migu": ("vip_migu_state", "migu_state.json"),
     "mgtv": ("vip_mgtv_state", "mgtv_state.json"),
 }
-_VIP_PLATFORM_NAMES = {"iqiyi": "爱奇艺", "migu": "咪咕", "mgtv": "芒果TV"}
+_VIP_PLATFORM_NAMES = {"iqiyi": "AI", "migu": "MI", "mgtv": "MANG"}
 
 
 def vip_state_path(platform, cfg=None):
@@ -3346,7 +3376,7 @@ def vip_import_state(platform, state, path=None):
         os.replace(tmp, path)
     except Exception as e:
         return False, "保存登录态失败：%s" % repr(e)[:120]
-    return True, "%s登录态已保存（%d 条 cookie）" % (
+    return True, "%s 登录态已保存（%d 条 cookie）" % (
         _VIP_PLATFORM_NAMES[platform], len(ck))
 
 
@@ -3361,7 +3391,7 @@ def vip_clear_state(platform):
         pass
     except Exception as e:
         return False, "删除登录态失败：%s" % repr(e)[:120]
-    return True, "%s登录态已清空" % _VIP_PLATFORM_NAMES[platform]
+    return True, "%s 登录态已清空" % _VIP_PLATFORM_NAMES[platform]
 
 
 def _vip_health_sync(port):
@@ -3414,7 +3444,7 @@ def vip_status_payload():
         "vip_iqiyi_port": _vip_port(cfg.get("vip_iqiyi_port"), 8770),
         "vip_migu_port": _vip_port(cfg.get("vip_migu_port"), 8771),
         "vip_mgtv_port": _vip_port(cfg.get("vip_mgtv_port"), 8772),
-        "vip_sites": [s["name"] for s in sites],
+        "vip_sites": [s.get("display") or s["name"] for s in sites],
         "vip_states": vip_states_payload(cfg),
     }
 

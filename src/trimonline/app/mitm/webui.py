@@ -591,23 +591,23 @@ pre{background:#0d1117;border:1px solid var(--line);border-radius:8px;
   <div id="vipPanel" style="display:none">
     <div class="row" style="gap:18px">
       <label style="display:flex;align-items:center;gap:6px;color:var(--fg)">
-        <input type="checkbox" id="vipIqiyi" style="width:auto"> 开启爱奇艺
+        <input type="checkbox" id="vipIqiyi" style="width:auto"> 开启 AI
       </label>
       <label style="display:flex;align-items:center;gap:6px;color:var(--fg)">
-        <input type="checkbox" id="vipMigu" style="width:auto"> 开启咪咕
+        <input type="checkbox" id="vipMigu" style="width:auto"> 开启 MI
       </label>
       <label style="display:flex;align-items:center;gap:6px;color:var(--fg)">
         <input type="checkbox" id="vipMiguLive" style="width:auto"> 看直播电视
       </label>
       <label style="display:flex;align-items:center;gap:6px;color:var(--fg)">
-        <input type="checkbox" id="vipMgtv" style="width:auto"> 开启芒果
+        <input type="checkbox" id="vipMgtv" style="width:auto"> 开启 MANG
       </label>
       <span class="tag dim" id="vipState">未开启</span>
     </div>
     <div class="row" style="margin-top:10px">
       <button class="ghost" id="btnVipSave">保存 VIP 开关</button>
       <span style="color:var(--dim);font-size:12px">
-        「看直播电视」仅在「开启咪咕」时生效，提供咪咕电视直播频道。
+        「看直播电视」仅在「开启 MI」时生效，提供 MI 电视直播频道。
       </span>
     </div>
     <div class="sep">会员登录（扫码 / 手机验证码）</div>
@@ -963,10 +963,10 @@ function renderVip(){
   }
   if (st) {
     var names = [];
-    if (v.iqiyi) names.push("爱奇艺");
-    if (v.migu) names.push("咪咕");
-    if (v.migu && v.migu_live) names.push("直播电视");
-    if (v.mgtv) names.push("芒果");
+    if (v.iqiyi) names.push("AI");
+    if (v.migu) names.push("MI");
+    if (v.migu && v.migu_live) names.push("MI 直播");
+    if (v.mgtv) names.push("MANG");
     st.className = "tag " + (v.unlocked && names.length ? "ok" : "dim");
     st.textContent = names.length ? ("当前：" + names.join(" / ")) : "当前：未启用任何 VIP 源";
   }

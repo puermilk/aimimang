@@ -461,7 +461,7 @@ class Handler(BaseHTTPRequestHandler):
                 "vod_remarks": c.get("cat") or "直播",
                 "vod_year": "",
                 "vod_area": "",
-                "vod_content": "咪咕电视直播（需网络可用；部分频道受版权/会员限制）",
+                "vod_content": "MI 电视直播（需网络可用；部分频道受版权/会员限制）",
                 "vod_actor": "",
                 "vod_director": "",
                 "vod_play_from": "migu_live",

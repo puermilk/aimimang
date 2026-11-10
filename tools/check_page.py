@@ -206,7 +206,7 @@ ck(vl.indexOf("立即保活") >= 0, "三个平台都有「立即保活」按钮"
 ck(vl.indexOf(">AI<") >= 0 && vl.indexOf(">MI<") >= 0 && vl.indexOf(">MANG<") >= 0,
    "登录界面包含 AI / MI / MANG");
 ck(vl.indexOf("登录态已导入") >= 0, "已配置的平台显示登录态状态");
-ck((E("vipState").textContent || "").indexOf("爱奇艺") >= 0,
+ck((E("vipState").textContent || "").indexOf("AI") >= 0,
    "VIP 开关状态显示当前启用的源");
 
 __out.join("\n");

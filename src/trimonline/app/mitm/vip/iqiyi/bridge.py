@@ -1199,7 +1199,9 @@ def history_prewarm():
             break
         g = (v or {}).get("g")
         r = reg.get(g) if g else None
-        if not r or r.get("site") != "爱奇艺":
+        # 注册表里的内部 source 名是「爱奇艺VIP」，旧条件写死「爱奇艺」
+        # 导致 history_prewarm 永远命中不了，首段预取实际没生效。
+        if not r or not str(r.get("site") or "").startswith(("爱奇艺", "AI")):
             continue
         eps = r.get("eps") or []
         title = (v or {}).get("title") or ""

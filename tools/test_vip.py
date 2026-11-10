@@ -189,7 +189,17 @@ class VipCoverTest(unittest.TestCase):
         ]
         got = mitm._vip_first_sort(items)
         names = [x["ancestor_name"].split(" · ")[0] for x in got[:3]]
-        self.assertEqual(names, ["爱奇艺VIP", "咪咕VIP", "芒果VIP"])
+        self.assertEqual(names, ["AI", "MI", "MANG"])
+
+    def test_old_vip_record_displays_latin_source_name(self):
+        rec = {
+            "title": "测试片", "site": "爱奇艺VIP",
+            "pic": "https://pic.example/a.jpg",
+            "eps": [{"name": "正片", "url": "http://example.test/a.m3u8"}],
+        }
+        item = mitm.to_search_item("on" + "d" * 30, rec)
+        self.assertTrue(item["ancestor_name"].startswith("AI"))
+        self.assertEqual(mitm._vip_display_site("咪咕直播"), "MI 直播")
 
     def test_build_item_has_cover_dims(self):
         guid = "on" + "c" * 30
@@ -204,10 +214,21 @@ class VipCoverTest(unittest.TestCase):
             item["poster"].startswith("/v/__mitm__/vipimg?v=3&u="))
 
 
+class LabelTest(unittest.TestCase):
+    def test_migu_keepalive_accepts_real_cookies(self):
+        import vip_keepalive
+        auth = vip_keepalive.PLATFORMS["migu"]["auth"]
+        for name in ("mgnd_session_id", "userInfo", "UserInfo", "checked_token"):
+            self.assertIn(name, auth)
+
+    def test_live_library_uses_latin_name(self):
+        self.assertEqual(mitm.migu_live_lib_info()["name"], "MI 直播")
+
+
 class PageTest(unittest.TestCase):
     def test_page_has_unlock_live_and_login_copy(self):
         page = webui.PAGE
-        for needle in ("暗号", "开启爱奇艺", "开启咪咕", "开启芒果",
+        for needle in ("暗号", "开启 AI", "开启 MI", "开启 MANG",
                        "看直播电视", "VIP 在线源接进来", "已识别登录",
                        "建议短信登录", "扫码登录", "短信登录", "保活",
                        "会员", "2.0.0 正式版"):

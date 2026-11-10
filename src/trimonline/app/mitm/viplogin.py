@@ -41,7 +41,7 @@ def log(*a):
 
 PLATFORMS = {
     "iqiyi": {
-        "name": "爱奇艺",
+        "name": "AI",
         "home": "https://www.iqiyi.com/",
         "open": ["div[class*='topbar_userBtn']", "#btn_user"],
         "qr": ["div[class*='qkLogin'] img", "div[class*='qkLogin'] canvas",
@@ -58,7 +58,7 @@ PLATFORMS = {
         "auth": ["P00001"],
     },
     "migu": {
-        "name": "咪咕",
+        "name": "MI",
         "home": "https://www.miguvideo.com/",
         "open": [".header-user", ".icon-item.user"],
         "qr_toggle": ["a#qrccode", "a.qrcode"],
@@ -72,10 +72,11 @@ PLATFORMS = {
         "agree": ["q.checkbox", "input.J_mobileIsReadPrivacy",
                    "div.protocol i", "div.protocol span", "div.protocol",
                    "input[type=checkbox]"],
-        "auth": ["MIGU_UID"],
+        "auth": ["MIGU_UID", "mgnd_session_id", "userInfo",
+                 "UserInfo", "checked_token"],
     },
     "mgtv": {
-        "name": "芒果TV",
+        "name": "MANG",
         "home": "https://www.mgtv.com/",
         "open": [".top-header-v2-actions__avatar"],
         "privacy": ["button.allow", "button:has-text('我同意')"],
@@ -464,7 +465,7 @@ class LoginSession:
                         "Object.defineProperty(navigator,'webdriver',{get:()=>undefined});")
                     page = ctx.new_page()
                     _trace_page(page, self.platform)
-                    self._set(message="正在打开%s…" % self.spec["name"])
+                    self._set(message="正在打开 %s…" % self.spec["name"])
                     page.goto(self.spec["home"],
                               wait_until="domcontentloaded", timeout=60000)
                     _wait_ready(page)
@@ -632,7 +633,7 @@ class LoginSession:
                 self._set(state="error", message=msg)
                 return
             self._set(state="success", logged=True, qr="",
-                      message="登录成功，已保存%s登录态" % self.spec["name"])
+                      message="登录成功，已保存 %s 登录态" % self.spec["name"])
         except Exception as e:
             self._set(state="error", message="保存登录态失败：%s" % repr(e)[:140])
 

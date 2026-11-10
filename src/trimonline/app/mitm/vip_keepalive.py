@@ -29,21 +29,22 @@ CHROMIUM = os.environ.get("AIMIMANG_CHROMIUM") or (
 
 PLATFORMS = {
     "iqiyi": {
-        "name": "爱奇艺",
+        "name": "AI",
         "state": "vip_iqiyi_state",
         "file": "iqiyi_state.json",
         "auth": ["P00001"],
         "urls": ["https://www.iqiyi.com/", "https://passport.iqiyi.com/"],
     },
     "migu": {
-        "name": "咪咕",
+        "name": "MI",
         "state": "vip_migu_state",
         "file": "migu_state.json",
-        "auth": ["MIGU_UID", "mgnd_session_id"],
+        "auth": ["MIGU_UID", "mgnd_session_id", "userInfo",
+                 "UserInfo", "checked_token"],
         "urls": ["https://www.miguvideo.com/", "https://passport.migu.cn/"],
     },
     "mgtv": {
-        "name": "芒果TV",
+        "name": "MANG",
         "state": "vip_mgtv_state",
         "file": "mgtv_state.json",
         "auth": ["UID", "loginAccount", "id"],

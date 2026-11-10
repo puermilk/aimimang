@@ -8,8 +8,8 @@
 
 **`爱迷茫-2.0.0.fpk`**（2026-11-10 · 正式版）
 
-- 大小：52 MB（含 Playwright Python 驱动，浏览器用 NAS 自带 chromium）
-- SHA-256：`fd1cf90d4f82fa712ff31c76f50d6065f85491ebf9329381faf52c0f02544112`
+- 大小：59 MB（含 Playwright Python 驱动、Pillow 与 pillow.libs，浏览器用 NAS 自带 chromium）
+- SHA-256：`9fc7f07543f90a67a8fd17ce597c2a4d8fcf8a28cc945948d38b41cc5f639765`
 
 下载后建议先校验：
 
@@ -34,7 +34,7 @@ sha256sum 爱迷茫-2.0.0.fpk
 | `爱迷茫-1.2.8.fpk` | 5.5M | `4d287fabdaf21e140c8809fa1896f37495387ae15f7a9e8fda3485963cf74e2d` |
 | `爱迷茫-1.2.9.fpk` | 5.5M | `a6574dceafcae7fb4709d6274e542605de0c1dbc4e769e91a124e5cc35a7ab89` |
 | `爱迷茫-1.3.0.fpk` | 5.5M | `d4a108d62df120d2b72eaa38f453681d8a0a1efe6089dfc037904a3c16515437` |
-| `爱迷茫-2.0.0.fpk` | 52M | `fd1cf90d4f82fa712ff31c76f50d6065f85491ebf9329381faf52c0f02544112` |
+| `爱迷茫-2.0.0.fpk` | 59M | `9fc7f07543f90a67a8fd17ce597c2a4d8fcf8a28cc945948d38b41cc5f639765` |
 
 完整的校验清单见 [`SHA256SUMS.txt`](SHA256SUMS.txt)，可一次性校验：
 

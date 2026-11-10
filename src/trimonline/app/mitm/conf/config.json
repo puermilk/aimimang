@@ -18,11 +18,11 @@
   "source_limit     : 最多启用几个采集源（0=不限；按主用→兜底顺序取前 N 个）",
   "js_source_limit  : 最多同时查几个 JS 源（0=不限；默认 4，避免一次启动太多引擎）",
   "",
-  "vip_unlocked      : 2.0 VIP 源（爱奇艺 / 咪咕 / 芒果）总开关，只能在配置页输入暗号开启",
-  "vip_iqiyi         : 爱奇艺在线源开关（需要自己的爱奇艺会员登录态）",
-  "vip_migu          : 咪咕视频在线源开关（需要自己的咪咕会员登录态）",
-  "vip_migu_live     : 咪咕电视直播开关（仅 vip_migu 打开时生效）",
-  "vip_mgtv          : 芒果TV在线源开关（需要自己的芒果TV会员登录态）"
+  "vip_unlocked      : 2.0 VIP 源（AI / MI / MANG）总开关，只能在配置页输入暗号开启",
+  "vip_iqiyi         : AI 在线源开关（需要自己的 AI 会员登录态）",
+  "vip_migu          : MI 在线源开关（需要自己的 MI 会员登录态）",
+  "vip_migu_live     : MI 电视直播开关（仅 vip_migu 打开时生效）",
+  "vip_mgtv          : MANG 在线源开关（需要自己的 MANG 会员登录态）"
  ],
  "write_allow_any": false,
  "write_allow_ip": [],

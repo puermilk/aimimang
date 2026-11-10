@@ -15,6 +15,8 @@
 | **fantaiying7/EXT** | drpy 运行时素材、模板与规则写法参考 | 仓库未声明许可证 | <https://github.com/fantaiying7/EXT> |
 | **QuickJS**（Fabrice Bellard、Charlie Gordon） | 嵌入式 JavaScript 引擎 | MIT | <https://bellard.org/quickjs/> |
 | **quickjs（Python 绑定）**（Petter Strandmark） | 让 Python 侧可以执行 drpy 规则 | MIT | <https://github.com/PetterS/quickjs> |
+| **Playwright**（Microsoft 及贡献者） | MI / MANG 取流用的无头浏览器驱动 | Apache-2.0 | <https://github.com/microsoft/playwright> |
+| **Pillow**（Python Pillow 团队） | VIP 封面 2:3 裁切与金框 | HPND | <https://github.com/python-pillow/Pillow> |
 | **cheerio** | 服务端 jQuery 风格 HTML 解析 | MIT | <https://github.com/cheeriojs/cheerio> |
 | **crypto-js** | 规则里常见的加密 / 摘要函数 | MIT | <https://github.com/brix/crypto-js> |
 | **jinja-js**（sstur） | 规则模板渲染 | MIT | <https://github.com/sstur/jinja-js> |
@@ -64,6 +66,10 @@
 | propcache | 0.5.4 | Apache-2.0 |
 | yarl | 1.25.1 | Apache-2.0 |
 | typing_extensions | 随 Python 生态 | PSF-2.0 |
+| Playwright | 1.64.1（Python 驱动；浏览器用 NAS 自带 chromium） | Apache-2.0 |
+| greenlet | 3.5.6 | MIT |
+| pyee | 13.0.1 | MIT |
+| Pillow | 12.3.0（随包分发，含 pillow.libs） | HPND |
 
 > 运行库由 `src/trimonline/make_lib.sh` 从部署环境抽取，构建时并入 FPK；
 > 源码仓库不重复存放这些第三方二进制（`app/mitm/lib/` 已被 `.gitignore` 排除）。
@@ -107,6 +113,7 @@ Apache-2.0 组件的完整文本见各项目仓库；GPL-3.0 的完整文本见�
 - 感谢 **Hululu007** 把 drpy 做成能在 Node/浏览器里跑的完整实现，并保留了规则的写法与调试经验。
 - 感谢 **fantaiying7** 整理的 EXT 素材与模板，让规则适配少走了很多弯路。
 - 感谢 **Fabrice Bellard / Charlie Gordon** 的 QuickJS，以及 **Petter Strandmark** 的 Python 绑定。
+- 感谢 **Microsoft Playwright**、**Python Pillow**、**greenlet / pyee** 的维护者。
 - 感谢 **cheerio / crypto-js / jinja-js / URI.js / JSON5 / pako / node-rsa / aiohttp** 的维护者。
 - 感谢 **TVBox / 海阔视界** 社区沉淀下来的接口与规则生态。
 - 感谢 **飞牛 fnOS** 提供的平台，以及所有在 Issue 里帮忙试错、反馈日志的用户。

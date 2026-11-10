@@ -48,7 +48,23 @@ if [ -d "$PW_SRC/playwright" ]; then
     done
     echo "已并入 playwright（VIP 源取流；浏览器用系统 chromium）"
 else
-    echo "警告：没找到 playwright —— 爱奇艺仍可播放，咪咕/芒果播放会提示缺组件" >&2
+    echo "警告：没找到 playwright —— AI 仍可播放，MI/MANG 播放会提示缺组件" >&2
+fi
+
+# Pillow：VIP 封面 2:3 裁切 + 金框。系统有就并入，避免换一台 NAS 后金框消失。
+PIL_SRC=""
+for d in "$PW_SRC" "$SRC"; do
+    if [ -d "$d/PIL" ]; then PIL_SRC="$d"; break; fi
+done
+if [ -n "$PIL_SRC" ]; then
+    cp -a "$PIL_SRC/PIL" "$DST/"
+    [ -d "$PIL_SRC/pillow.libs" ] && cp -a "$PIL_SRC/pillow.libs" "$DST/"
+    for d in "$PIL_SRC"/Pillow-*.dist-info; do
+        [ -d "$d" ] && cp -a "$d" "$DST/"
+    done
+    echo "已并入 Pillow（VIP 封面裁切/金框）← $PIL_SRC"
+else
+    echo "警告：没找到 Pillow —— VIP 封面将退化为原图（无金框）" >&2
 fi
 
 # QuickJS：JS 蜘蛛（drpy2）引擎本体。只带 cp311 / x86_64 的 manylinux 扩展，
