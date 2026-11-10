@@ -9,7 +9,7 @@
 **`爱迷茫-2.0.0.fpk`**（2026-11-10 · 预览版）
 
 - 大小：52 MB（含 Playwright Python 驱动，浏览器用 NAS 自带 chromium）
-- SHA-256：`8029a46019161fd5c069d3e69e005e92fc255f527ed093c2f93fbd408bda3e4a`
+- SHA-256：`bbf5259d16d9798944dae4c3b7384325a72d0db637a80d9bcf805189a38e859b`
 
 下载后建议先校验：
 

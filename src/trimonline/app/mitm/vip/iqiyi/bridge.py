@@ -711,6 +711,12 @@ def _master_m3u8(tvid, sub=False, bid="600"):
     """
     res, bw = _RES.get(str(bid), ("1920x1080", 8000000))
     out = ["#EXTM3U", "#EXT-X-VERSION:3"]
+    if sub:
+        # 标准 HLS 字幕轨：Web / Android / TV 的 hls.js/ExoPlayer 都能识别。
+        out.append(
+            '#EXT-X-MEDIA:TYPE=SUBTITLES,GROUP-ID="subs",NAME="中文",'
+            'LANGUAGE="zh",DEFAULT=YES,AUTOSELECT=YES,FORCED=NO,'
+            f'URI="{CONF["base"]}/sp/{tvid}.m3u8"')
     out.append(f'#EXT-X-STREAM-INF:BANDWIDTH={bw}'
                + (',SUBTITLES="subs"' if sub else '')
                + f',RESOLUTION={res}')
@@ -754,7 +760,8 @@ def serve_playlist(self, tvid, media_only=False):
             "bid", d.get("bid"), "segs", len(iq_dash.seg_urls(d["m3u8"])))
         if media_only:
             return self._m3u8(media)
-        return self._m3u8(_master_m3u8(tvid, bid=d.get("bid") or "600"))
+        return self._m3u8(_master_m3u8(
+            tvid, sub=bool(d.get("sub")), bid=d.get("bid") or "600"))
     if iq_dash.is_drm(tvid):
         log("p DRM, 拒绝:", tvid)
         return self.send_error(403)
@@ -810,7 +817,7 @@ def serve_playlist(self, tvid, media_only=False):
     # ---- 返回主清单(不再注入 HLS 字幕轨，改用外挂字幕) ----
     if not media_only:
         log("master for", tvid, "segs:", n, "templates:", len(templates))
-        return self._m3u8(_master_m3u8(tvid))
+        return self._m3u8(_master_m3u8(tvid, sub=bool(st.get("subtitle"))))
     log("playlist for", tvid, "segs:", n, "templates:", len(templates))
 
     return self._m3u8(media)

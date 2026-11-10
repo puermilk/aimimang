@@ -2236,6 +2236,60 @@ async def hgdj_search_items(kw, limit=12):
     return out
 
 
+_SUB_MAP = {}
+
+
+def _sub_for(rec, guid, ep_index=0):
+    """在线爱奇艺条目 -> 伪外挂字幕轨（真正的 VTT 由桥 /sub 提供）。"""
+    if not str(rec.get("site") or "").startswith("爱奇艺"):
+        return None
+    eps = rec.get("eps") or []
+    if not eps:
+        return None
+    try:
+        ep_index = max(0, min(int(ep_index), len(eps) - 1))
+    except Exception:
+        ep_index = 0
+    ep = eps[ep_index] or {}
+    urls = list(ep.get("urls") or [])
+    u = ep.get("url") or (urls[0] if urls else "")
+    m = re.match(r"https?://127\.0\.0\.1:(\d+)/p/(\d+)\.m3u8", u or "")
+    if not m:
+        return None
+    port, tvid = int(m.group(1)), m.group(2)
+    sg = "onsub" + hashlib.md5(
+        ("%s|%s|%s|%s" % (guid, ep_index, port, tvid)).encode()).hexdigest()[:27]
+    info = {"guid": sg, "port": port, "tvid": tvid, "ep": ep_index}
+    _SUB_MAP[sg] = info
+    rec.setdefault("subs", {})[str(ep_index)] = info
+    return info
+
+
+def _resolve_sub(sg):
+    info = _SUB_MAP.get(sg)
+    if info:
+        return info
+    for r in registry.values():
+        if not isinstance(r, dict):
+            continue
+        for x in (r.get("subs") or {}).values():
+            if isinstance(x, dict) and x.get("guid") == sg:
+                _SUB_MAP[sg] = x
+                return x
+    return None
+
+
+def _sub_stream(sg, guid, now=None):
+    now = now or int(time.time() * 1000)
+    return {
+        "guid": sg, "media_guid": guid, "title": "中文",
+        "codec_name": "subrip", "codec_type": "subtitle",
+        "language": "zh", "is_default": 1, "is_external": 1,
+        "is_subtitle_external": 1, "forced": 0, "index": 0,
+        "create_time": now, "update_time": now,
+    }
+
+
 def synth_play_info(guid, rec, user=None):
     vg = "onv" + guid[2:][:29]
     ag = "ona" + guid[2:][:29]
@@ -2248,6 +2302,9 @@ def synth_play_info(guid, rec, user=None):
     elif rec.get("season_marker"):
         _parent = _series
     _w = watch_lookup(user, guid) or {}
+    sub = _sub_for(rec, guid, 0)
+    sg = (sub or {}).get("guid", "")
+    now = int(time.time() * 1000)
     return {
         "msg": "", "code": 0,
         "data": {
@@ -2255,7 +2312,12 @@ def synth_play_info(guid, rec, user=None):
             "play_config": None,
             "ts": int(_w.get("ts") or 0),      # 续播：上次播放位置
             "type": "Movie",
-            "video_guid": vg, "audio_guid": ag, "subtitle_guid": "",
+            "video_guid": vg, "audio_guid": ag,
+            "subtitle_guid": sg,
+            "subtitle_link": ("/v/api/v1/subtitle/dl/" + sg) if sg else "",
+            "subtitle_index": 0 if sg else -1,
+            "is_subtitle_external": 1 if sg else 0,
+            "subtitle_streams": [_sub_stream(sg, guid, now)] if sg else [],
             "media_guid": guid,
             "item": build_item(guid, rec),
             "direct_link_audio_index": -1,
@@ -2328,9 +2390,12 @@ def synth_stream(guid, headers=None):
     }]
     qualities = [{"bitrate": 2000000, "resolution": str(h),
                   "progressive": False, "is_m3u8": True}]
+    sub = _sub_for(rec, guid, 0)
+    subs = ([_sub_stream(sub["guid"], guid, now)] if sub else [])
     return {"msg": "", "code": 0,
             "data": {"file_stream": file_stream, "video_stream": video_stream,
                      "audio_streams": audio_streams, "qualities": qualities,
+                     "subtitle_streams": subs,
                      "cloud_storage_info": None}}
 
 
@@ -2342,15 +2407,18 @@ def synth_play(guid, ep_index=0, headers=None):
         _lines = len(build_line_index(guid, _rec, ep_index))
     except Exception:
         _lines = 1
+    sub = _sub_for(_rec, guid, ep_index)
+    sg = (sub or {}).get("guid", "")
     return {
         "msg": "", "code": 0,
         "data": {
             "audio_guid": "ona" + guid[2:][:29], "audio_index": 1,
-            "hls_time": 4, "is_subtitle_external": 0,
+            "hls_time": 4, "is_subtitle_external": 1 if sg else 0,
             "media_guid": guid,
             "play_link": f"/v/media/online/{guid}.m3u8?ep={ep_index}",
             "line_count": _lines,
-            "subtitle_guid": "", "subtitle_index": -1, "subtitle_link": "",
+            "subtitle_guid": sg, "subtitle_index": 0 if sg else -1,
+            "subtitle_link": ("/v/api/v1/subtitle/dl/" + sg) if sg else "",
             "video_guid": "onv" + guid[2:][:29], "video_index": 0,
             "non_fatal_errno": None, "video_encoder": "",
             "not_supported_resolution": "",
@@ -4039,6 +4107,17 @@ def rewrite_playlist(text, base_url, referer, props=None):
               and not h.startswith("#EXT-X-MAP")]
     if props and props.get("width"):
         header = [_fix_stream_inf(h, props) for h in header]
+    # 主清单里的 #EXT-X-MEDIA 也可能带绝对 URI（字幕/音轨），必须一起代理，
+    # 否则手机端会去请求 127.0.0.1:8770（它自己的本机）导致字幕 404。
+    fixed_header = []
+    for h in header:
+        if 'URI="' in h:
+            def _rep(m, _b=base_url, _r=referer):
+                return 'URI="%s"' % proxied(
+                    urllib.parse.urljoin(_b, m.group(1)), _r)
+            h = re.sub(r'URI="([^"]+)"', _rep, h)
+        fixed_header.append(h)
+    header = fixed_header
 
     # ---- 2) 按 DISCONTINUITY 切分剩余部分 ----
     body = lines[idx:]
@@ -4881,11 +4960,12 @@ async def handle_request(reader, writer, head, headers, body):
         elif path == "/v/__mitm__/api/vip/login/status":
             platform = (query.get("platform") or [""])[0]
             mgr = vip_login_manager()
-            session = (mgr.status(platform) if mgr else
-                       {"platform": platform, "state": "idle", "alive": False,
-                        "message": "登录组件不可用：" + _VIPLOGIN_ERR})
-            writer.write(json_response({"ok": True, "session": session,
-                                        "vip_login": session,
+            login_session = (mgr.status(platform) if mgr else
+                             {"platform": platform, "state": "idle",
+                              "alive": False,
+                              "message": "登录组件不可用：" + _VIPLOGIN_ERR})
+            writer.write(json_response({"ok": True, "session": login_session,
+                                        "vip_login": login_session,
                                         **vip_status_payload()}))
         elif path == "/v/__mitm__/api/vip/login/verify" and method == "POST":
             req = _json_body(body)
@@ -4967,6 +5047,43 @@ async def handle_request(reader, writer, head, headers, body):
     need_ctx = (path.startswith("/v/api/v1/") or path.startswith("/v/media/"))
     req_user = request_user(headers) if need_ctx else None
     allow_online = online_allowed(req_user) if need_ctx else True
+
+    # ---- 0) 在线外挂字幕（爱奇艺 VIP 源） ----
+    # 飞牛影视的 play/info / play/play 通过 subtitle_guid 指向这里；
+    # 真正的 WebVTT 由爱奇艺采集桥 /sub/<tvid>.vtt 生成。
+    _sub_sg = ""
+    if path.startswith("/v/api/v1/subtitle/dl/"):
+        _sub_sg = path.rsplit("/", 1)[-1].split(".")[0]
+    elif path.startswith("/v/media/online/sub/") and path.endswith(".vtt"):
+        _sub_sg = path[len("/v/media/online/sub/"):-4]
+    if _sub_sg:
+        info = _resolve_sub(_sub_sg)
+        if not allow_online or not info:
+            await write_head(writer, 404, {"Content-Length": 0,
+                                           "Connection": "close"})
+            writer.close()
+            return
+        url = "http://127.0.0.1:%d/sub/%s.vtt" % (
+            info["port"], info["tvid"])
+        try:
+            async with session.get(
+                    url, headers={"Referer": "https://www.iqiyi.com/"},
+                    timeout=aiohttp.ClientTimeout(total=20)) as resp:
+                raw = await resp.read()
+            if resp.status == 200 and raw.startswith(b"WEBVTT"):
+                writer.write(text_response(
+                    raw, ctype="text/vtt; charset=utf-8",
+                    extra=[("Access-Control-Allow-Origin", "*")]))
+            else:
+                log("subtitle proxy fail", info.get("tvid"), resp.status)
+                await write_head(writer, 404, {"Content-Length": 0,
+                                               "Connection": "close"})
+        except Exception as e:
+            log("subtitle proxy err", info.get("tvid"), repr(e)[:100])
+            await write_head(writer, 502, {"Content-Length": 0,
+                                           "Connection": "close"})
+        await writer.drain()
+        return
 
     # ---- 1) 搜索合并 ----
     if path == "/v/api/v1/search/list":

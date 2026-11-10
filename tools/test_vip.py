@@ -112,6 +112,42 @@ class VipTest(unittest.TestCase):
         self.assertEqual(len(mitm._merge_online_items(cms, js, 0)), 60)
 
 
+class SubtitleTest(unittest.TestCase):
+    def _rec(self):
+        return {"guid": "on" + "a" * 30, "site": "爱奇艺VIP",
+                "title": "我不是大师", "eps": [
+                    {"name": "第1集",
+                     "url": "http://127.0.0.1:8770/p/6038403692778500.m3u8"},
+                    {"name": "第2集",
+                     "url": "http://127.0.0.1:8770/p/4412413519445700.m3u8"},
+                ]}
+
+    def test_sub_for_builds_and_resolves(self):
+        rec = self._rec()
+        info = mitm._sub_for(rec, rec["guid"], 1)
+        self.assertTrue(info["guid"].startswith("onsub"))
+        self.assertEqual(info["tvid"], "4412413519445700")
+        got = mitm._resolve_sub(info["guid"])
+        self.assertEqual(got["tvid"], "4412413519445700")
+
+    def test_play_info_exposes_external_subtitle(self):
+        rec = self._rec()
+        mitm.registry[rec["guid"]] = rec
+        data = mitm.synth_play_info(rec["guid"], rec)["data"]
+        self.assertEqual(data["is_subtitle_external"], 1)
+        self.assertTrue(data["subtitle_guid"].startswith("onsub"))
+        self.assertTrue(data["subtitle_link"].startswith(
+            "/v/api/v1/subtitle/dl/"))
+
+    def test_play_exposes_external_subtitle(self):
+        rec = self._rec()
+        mitm.registry[rec["guid"]] = rec
+        data = mitm.synth_play(rec["guid"], 1)["data"]
+        self.assertEqual(data["subtitle_index"], 0)
+        self.assertEqual("4412413519445700", mitm._resolve_sub(
+            data["subtitle_guid"])["tvid"])
+
+
 class JsSearchTest(unittest.TestCase):
     def test_js_query_does_not_cap_results(self):
         """一个 JS 源搜到 10 条，就该回 10 条；旧实现只取前 3 条。"""
