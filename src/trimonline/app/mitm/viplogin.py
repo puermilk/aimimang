@@ -10,6 +10,7 @@ import base64
 import json
 import os
 import queue
+import subprocess
 import threading
 import time
 import traceback
@@ -86,7 +87,7 @@ PLATFORMS = {
         "send": ["div.send-code", "text=获取校验码"],
         "submit": ["div.login-btn", "text=登录"],
         "agree": [".protocol-agree", "input[type=checkbox]"],
-        "auth": ["UID"],
+        "auth": ["UID", "loginAccount", "id"],
     },
 }
 
@@ -220,6 +221,16 @@ def _logged(page, context, spec):
     names = _cookie_names(context)
     if any(a in names for a in spec.get("auth") or []):
         return True
+    # 咪咕登录成功后登录 iframe 会关闭，父页面 .side-wrapper 的
+    # islogin 会从 false 变成 true；这是比 cookie 名更可靠的信号。
+    try:
+        islogin = page.evaluate(
+            "() => { const e = document.querySelector('.side-wrapper');"
+            " return e ? (e.getAttribute('islogin') || '') : ''; }")
+        if str(islogin).lower() == "true":
+            return True
+    except Exception:
+        pass
     # 有些平台扫码后不写 cookie，而是把 iframe 跳到账号页；用页面文案兜底。
     for frame in _frames(page):
         try:
@@ -247,9 +258,102 @@ def _auto_confirm(page):
     return False
 
 
+def _visible_error(page):
+    """登录失败时把页面上的真实原因带出来，别再只显示“验证码可能不对”。"""
+    words = ("验证码错误", "验证码不正确", "短信验证码错误", "验证码已失效",
+             "验证码已过期", "验证码错误或已失效", "请拖动", "滑块",
+             "操作频繁", "请求过于频繁", "账号异常", "手机号格式",
+             "请输入正确的手机号", "图形验证码", "图片验证码")
+    for frame in _frames(page):
+        try:
+            txt = frame.locator("body").inner_text(timeout=800) or ""
+        except Exception:
+            continue
+        for w in words:
+            if w in txt:
+                return w
+    return ""
+
+
+def _agree_state(page, spec):
+    """返回 True=已勾选，False=明确未勾选，None=看不出来。"""
+    for frame in _frames(page):
+        for sel in spec.get("agree") or []:
+            try:
+                loc = frame.locator(sel)
+                for i in range(min(loc.count(), 5)):
+                    el = loc.nth(i)
+                    if not el.is_visible():
+                        continue
+                    cls = (el.get_attribute("class") or "").lower()
+                    if "not-agree" in cls or "_check_off_" in cls or " off" in cls:
+                        return False
+                    if "checked" in cls or "_check_on_" in cls:
+                        return True
+                    if "protocol-agree" in cls:
+                        return True
+                    try:
+                        if el.is_checked():
+                            return True
+                    except Exception:
+                        pass
+                    return None
+            except Exception:
+                continue
+    return None
+
+
+def _ensure_agree(page, spec):
+    """只勾选、不反复点击；已经勾上时绝不再点（否则会取消）。"""
+    state = _agree_state(page, spec)
+    if state is True:
+        return True
+    return _click_any(page, spec.get("agree"), force=True, timeout=1500)
+
+
 def _mask_phone(phone):
     phone = str(phone or "")
     return phone[:3] + "****" + phone[-2:] if len(phone) >= 6 else phone
+
+
+def _trace_page(page, platform):
+    """只记录咪咕登录链路的接口状态和平台 code/msg，不记录 cookie/token。"""
+    import re as _re
+    def on_resp(r):
+        try:
+            u = r.url
+            if platform != "migu" or "passport.migu.cn" not in u:
+                return
+            if not any(k in u for k in ("login", "qrc", "dynamic", "password",
+                                        "check", "auth")):
+                return
+            detail = ""
+            try:
+                body = r.text()[:1200]
+                m = _re.search(r'"(?:code|resultCode|message|msg)"\s*:\s*"?([^",}]+)', body)
+                if m:
+                    detail = m.group(0)[:160]
+                if "/qrcquery" in u:
+                    try:
+                        mm = _re.search(r'"message"\s*:\s*"([^"]+)"', body)
+                        if mm:
+                            page._qr_message = mm.group(1)
+                        if any(k in body for k in ("已扫码", "确认登录", "待确认")):
+                            page._qr_scanned = True
+                    except Exception:
+                        pass
+            except Exception:
+                pass
+            log(platform, "net", r.status, u.split("?")[0][-90:], detail)
+        except Exception:
+            pass
+    try:
+        page.on("response", on_resp)
+        page.on("framenavigated", lambda f: log(
+            platform, "frame", f.url.split("?")[0][-110:])
+            if platform == "migu" and "passport.migu.cn" in f.url else None)
+    except Exception:
+        pass
 
 
 class LoginSession:
@@ -323,44 +427,75 @@ class LoginSession:
                       message="当前环境缺少 Playwright：" + _PW_ERR)
             return
         state_path = self.state_path
-        with sync_playwright() as p:
-            kw = {"headless": True,
-                  "args": ["--no-sandbox", "--disable-blink-features=AutomationControlled",
-                           "--autoplay-policy=no-user-gesture-required"]}
-            if self.chromium:
-                kw["executable_path"] = self.chromium
-            browser = p.chromium.launch(**kw)
+        xvfb = None
+        env = dict(os.environ)
+        headless = True
+        # 咪咕对无头浏览器风控更严：用 Xvfb 跑“有头”Chromium，
+        # 扫码/短信的页面行为更接近真实浏览器。
+        if self.platform == "migu" and os.path.exists("/usr/bin/Xvfb"):
             try:
-                ctx = browser.new_context(
-                    user_agent=UA, viewport={"width": 1440, "height": 900},
-                    locale="zh-CN")
-                ctx.add_init_script(
-                    "Object.defineProperty(navigator,'webdriver',{get:()=>undefined});")
-                page = ctx.new_page()
-                self._set(message="正在打开%s…" % self.spec["name"])
-                page.goto(self.spec["home"], wait_until="domcontentloaded",
-                          timeout=60000)
-                _wait_ready(page)
-                # 芒果首次会弹隐私协议
-                _click_any(page, self.spec.get("privacy"), force=True, timeout=2500)
-                if not _click_any(page, self.spec.get("open"), force=True, timeout=5000):
-                    self._set(state="error",
-                              message="没找到登录入口，请稍后重试或换用扫码登录")
-                    return
-                time.sleep(2.0)
-
-                if self.mode == "sms":
-                    self._sms_flow(page, ctx, state_path)
-                else:
-                    self._qr_flow(page, ctx, state_path)
-            finally:
+                xvfb = subprocess.Popen(
+                    ["Xvfb", ":99", "-screen", "0", "1440x900x24",
+                     "-nolisten", "tcp"],
+                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                time.sleep(1.0)
+                env["DISPLAY"] = ":99"
+                headless = False
+                log(self.platform, "using Xvfb headless=False")
+            except Exception as e:
+                log(self.platform, "Xvfb failed", repr(e)[:100])
+                xvfb = None
+        try:
+            with sync_playwright() as p:
+                kw = {"headless": headless,
+                      "args": ["--no-sandbox",
+                               "--disable-blink-features=AutomationControlled",
+                               "--autoplay-policy=no-user-gesture-required"],
+                      "env": env}
+                if self.chromium:
+                    kw["executable_path"] = self.chromium
+                browser = p.chromium.launch(**kw)
                 try:
-                    browser.close()
+                    ctx = browser.new_context(
+                        user_agent=UA,
+                        viewport={"width": 1440, "height": 900},
+                        locale="zh-CN")
+                    ctx.add_init_script(
+                        "Object.defineProperty(navigator,'webdriver',{get:()=>undefined});")
+                    page = ctx.new_page()
+                    _trace_page(page, self.platform)
+                    self._set(message="正在打开%s…" % self.spec["name"])
+                    page.goto(self.spec["home"],
+                              wait_until="domcontentloaded", timeout=60000)
+                    _wait_ready(page)
+                    _click_any(page, self.spec.get("privacy"),
+                               force=True, timeout=2500)
+                    if not _click_any(page, self.spec.get("open"),
+                                      force=True, timeout=5000):
+                        self._set(state="error",
+                                  message="没找到登录入口，请稍后重试或换用扫码登录")
+                        return
+                    time.sleep(2.0)
+                    if self.mode == "sms":
+                        self._sms_flow(page, ctx, state_path)
+                    else:
+                        self._qr_flow(page, ctx, state_path)
+                finally:
+                    try:
+                        browser.close()
+                    except Exception:
+                        pass
+        finally:
+            if xvfb is not None:
+                try:
+                    xvfb.terminate()
                 except Exception:
                     pass
 
     def _qr_flow(self, page, ctx, state_path):
         _choose_qr(page, self.spec)
+        # 咪咕/芒果的扫码页同样有协议勾选；不勾会让手机确认后仍不写登录态。
+        _ensure_agree(page, self.spec)
         qr, exact = "", False
         # 二维码是异步渲染的：先等它真出来，别把加载中的页面截图当二维码。
         for _ in range(20):
@@ -379,8 +514,13 @@ class LoginSession:
         while time.time() < deadline and not self.stop_event.is_set():
             if _logged(page, ctx, self.spec):
                 return self._finish(ctx, state_path)
+            _qmsg = getattr(page, "_qr_message", "")
+            if _qmsg:
+                self._set(message=_qmsg)
+            _ensure_agree(page, self.spec)
             _auto_confirm(page)
-            if time.time() - last_refresh > 8:
+            if (time.time() - last_refresh > 25
+                    and not getattr(page, "_qr_scanned", False)):
                 new_qr, new_exact = _capture_qr(page, self.spec)
                 if new_qr and (new_exact or not exact):
                     self._set(qr=new_qr)
@@ -400,15 +540,26 @@ class LoginSession:
         if not _fill_any(page, self.spec.get("phone"), self.phone):
             self._set(state="error", message="没找到手机号输入框")
             return
-        # 协议勾选（已勾过时点击通常无害）
-        _click_any(page, self.spec.get("agree"), force=True, timeout=1500)
+        _ensure_agree(page, self.spec)
         time.sleep(0.3)
         if not _click_any(page, self.spec.get("send"), force=True, timeout=4000):
             self._set(state="error", message="没找到「获取验证码」按钮")
             return
         time.sleep(2.0)
-        self._set(state="need_code",
-                  message="验证码已发送到 %s，请输入短信验证码" % _mask_phone(self.phone))
+        cap = ""
+        for frame in _frames(page):
+            try:
+                if frame.locator("#J_ImgCodeOne").first.is_visible():
+                    cap = "需要图形验证码"
+                    break
+            except Exception:
+                pass
+        if cap:
+            self._set(state="need_code",
+                      message="平台要求图形验证码，请改用扫码登录")
+        else:
+            self._set(state="need_code",
+                      message="验证码已发送到 %s，请输入短信验证码" % _mask_phone(self.phone))
         deadline = time.time() + 480
         while time.time() < deadline and not self.stop_event.is_set():
             if _logged(page, ctx, self.spec):
@@ -424,17 +575,49 @@ class LoginSession:
             if not _fill_any(page, self.spec.get("code"), val):
                 self._set(message="没找到验证码输入框")
                 continue
-            _click_any(page, self.spec.get("agree"), force=True, timeout=1200)
+            _ensure_agree(page, self.spec)
             if not _click_any(page, self.spec.get("submit"), force=True,
                               timeout=4000):
                 self._set(message="没找到登录按钮")
                 continue
             self._set(state="verifying", message="正在验证…")
-            for _ in range(8):
+            err = ""
+            for _ in range(12):
                 time.sleep(1.0)
                 if _logged(page, ctx, self.spec):
                     return self._finish(ctx, state_path)
-            self._set(state="need_code", message="验证码可能不对，请重新输入")
+                err = _visible_error(page)
+                if err:
+                    break
+            log(self.platform, "sms verify failed:", err or "no-visible-error")
+            try:
+                log(self.platform, "fail cookies",
+                    ",".join(sorted(_cookie_names(ctx))))
+                log(self.platform, "fail islogin",
+                    page.evaluate(
+                        "() => { const e = document.querySelector('.side-wrapper');"
+                        " return e ? (e.getAttribute('islogin') || '') : ''; }"))
+            except Exception:
+                pass
+            try:
+                pg_path = os.path.join(DATA_DIR, "migu_fail_%d.png" % int(time.time()))
+                page.screenshot(path=pg_path)
+                log(self.platform, "fail screenshot", pg_path)
+                for _fi, _fr in enumerate(_frames(page)):
+                    try:
+                        log(self.platform, "fail frame", _fi,
+                            (_fr.locator("body").inner_text(timeout=1000) or "")[:300])
+                    except Exception:
+                        pass
+            except Exception:
+                pass
+            if err:
+                self._set(state="need_code",
+                          message=(err + "，请重新输入")
+                                  if "图形验证码" not in err and "图片验证码" not in err
+                                  else (err + "，请改用扫码登录"))
+            else:
+                self._set(state="need_code", message="验证码可能不对，请重新输入")
         if not self.stop_event.is_set() and self.status.get("state") not in (
                 "error", "success"):
             self._set(state="expired", message="登录超时，请重新发起")

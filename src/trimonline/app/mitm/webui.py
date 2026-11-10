@@ -555,23 +555,23 @@ pre{background:#0d1117;border:1px solid var(--line);border-radius:8px;
 <body><div class="wrap">
 
 <h1>爱迷茫</h1>
-<div class="sub">飞牛影视在线源插件 · <b style="color:var(--ok)">2.0.0 预览版</b> · 源设置（<span class="mono" id="file">conf/sources.json</span>）<br>
-  VIP 源（爱奇艺 / 咪咕 / 芒果）在下方，需先输入暗号开启。</div>
+<div class="sub">飞牛影视在线源插件 · <b style="color:var(--ok)">2.0.0 正式版</b> · 源设置（<span class="mono" id="file">conf/sources.json</span>）<br>
+  VIP 源 在下方，需先输入暗号开启。</div>
 
-<div class="note"><b>免责声明</b>：本插件只是一个「播放器侧」的中转工具，不含任何影视内容，
+<div class="note"><b>声明</b>：本插件只是一个「播放器侧」的中转工具，不含任何影视内容，
 也不内置任何片源。你在下面填写的源地址、以及由此播放的内容，均由你自己提供并自负其责；
 请仅接入你有权访问的内容，并遵守当地法律法规与源站的服务条款。作者不对任何第三方源的
-合法性、可用性和内容负责。<br>
-<b>关于爱奇艺 / 咪咕 VIP 源</b>：插件只做本机协议中转，<b>不提供账号、不共享会员、不破解 DRM</b>；
-能看什么完全取决于<b>你自己账号的会员权限</b>，请先确认你已开通对应会员。
-会员内容请仅限个人观看，不要录制、传播或用于商业用途。如不同意，请不要使用本插件。</div>
+合法性、可用性和内容负责。<br><br>
+<b>关于 VIP 源</b>：不提供账号、不共享会员、不破解 DRM；能看什么完全取决于你自己账号的会员权限，
+请先确认你已开通对应会员。会员内容请仅限个人观看，不要录制、传播或用于商业用途。
+如不同意，请不要使用本插件。</div>
 
 <div id="warn" style="display:none"></div>
 
 <div class="card" id="vipCard">
-  <h2>VIP 源（2.0）· 爱奇艺 / 咪咕 / 芒果 · 暗号开启</h2>
+  <h2>VIP 源（2.0）·暗号开启</h2>
   <div class="sub" style="margin:-6px 0 10px;font-size:12.5px">
-    把爱奇艺、咪咕视频、芒果TV作为三路在线源接进来：搜索、点开、选集、播放与普通源一致。
+    VIP 在线源接进来：搜索、点开、选集、播放与普通源一致。
     <b>需要你自己的会员账号登录态</b>（未登录 / 非会员只能看免费内容或提示无权限）。
     本功能默认关闭，输入暗号后才能开启。
   </div>
@@ -619,19 +619,6 @@ pre{background:#0d1117;border:1px solid var(--line);border-radius:8px;
     <div id="vipLoginBox"></div>
     <div id="vipMsg" class="sub" style="margin:8px 0 0;font-size:12px"></div>
   </div>
-</div>
-
-<div class="card">
-  <h2>手机投屏 · 大屏看片</h2>
-  <div class="sub" style="margin:-6px 0 10px;font-size:12.5px">
-    在线源同样支持<b>手机投屏</b>：手机不用装额外插件，片源由 NAS 中转，投屏后手机关屏也不影响播放。
-  </div>
-  <ol style="margin:0 0 0 18px;padding:0;color:var(--fg);font-size:13px">
-    <li>手机安装<b>飞牛影视 App</b>，登录同一台 NAS；电视 / 投影与 NAS 接同一局域网。</li>
-    <li>在 App 里搜索并点开在线影片，进入播放页。</li>
-    <li>点播放器右上角的<b>投屏</b>图标，选择电视 / 投影设备即可。</li>
-    <li>爱奇艺 / 咪咕 / 芒果内容需先在 NAS 上配置<b>对应会员</b>的登录态；投屏画质受会员档位与网络影响。</li>
-  </ol>
 </div>
 
 <div class="card">
@@ -870,7 +857,7 @@ function renderJsTable(){
   document.getElementById("tblJs").innerHTML = h;
 }
 
-var VIP_NAMES = {iqiyi:"爱奇艺", migu:"咪咕", mgtv:"芒果TV"};
+var VIP_NAMES = {iqiyi:"AI", migu:"MI", mgtv:"MANG"};
 var VIP_LOGIN = {platform:null, timer:null, mode:"qr"};
 
 function timeAgo(ts){
@@ -895,18 +882,26 @@ function renderVipLogin(){
       : '<span class="tag dim">未导入登录态</span>';
     var runTag = hh.running
       ? '<span class="tag ' + (hh.logged ? "ok" : "warn") + '">采集桥运行中 · '
-        + (hh.logged ? "已识别登录" : "未识别登录") + '</span>'
+        + (hh.logged ? "已识别登录"
+           : (p === "migu" ? "未登录（扫码需手机确认，建议短信）"
+                           : "未识别登录")) + '</span>'
       : '<span class="tag bad">采集桥未运行</span>';
     var ka = (S.KEEPALIVE || {})[p] || {};
     var kaTag = ka.ts
       ? '<span class="tag ' + (ka.ok ? "ok" : "warn") + '">保活 '
         + (ka.ok ? "正常" : "待重新登录") + ' · ' + timeAgo(ka.ts) + '</span>'
       : '<span class="tag dim">未保活</span>';
+    var smsHint = (p === "migu" && !st.configured)
+      ? ' <span class="tag warn">建议短信登录</span>' : '';
+    var smsLabel = (p === "migu" && !st.configured)
+      ? '短信登录（推荐）' : '短信登录';
+    var qrBtn = '<button onclick="startVipLogin(\'' + p + '\',\'qr\')">扫码登录</button>';
+    var smsBtn = '<button class="ghost" onclick="startVipLogin(\'' + p + '\',\'sms\')">' + smsLabel + '</button>';
+    if (p === "migu" && !st.configured){ var _b=qrBtn; qrBtn=smsBtn; smsBtn=_b; }
     h += '<div class="row" style="gap:8px;margin-top:8px;padding-top:8px;'
        + 'border-top:1px solid var(--line)">'
-       + '<b style="min-width:58px">' + name + '</b>' + stateTag + runTag
-       + '<button onclick="startVipLogin(\'' + p + '\',\'qr\')">扫码登录</button>'
-       + '<button class="ghost" onclick="startVipLogin(\'' + p + '\',\'sms\')">短信登录</button>'
+       + '<b style="min-width:58px">' + name + '</b>' + stateTag + runTag + smsHint
+       + qrBtn + smsBtn
        + '<button class="ghost" onclick="keepaliveNow(\'' + p + '\')">立即保活</button>'
        + kaTag
        + '<button class="ghost" onclick="vipClear(\'' + p + '\')">清空</button>'
@@ -1251,6 +1246,7 @@ function pollVipLogin(platform){
         }
         if (s.state === "error" || s.state === "expired"){
           clearInterval(VIP_LOGIN.timer); VIP_LOGIN.timer = null;
+          if (platform === "migu") vipLoginMsg((s.message || "扫码失败") + "，建议改用短信登录");
           refreshVip();
         }
       }).catch(function(){});

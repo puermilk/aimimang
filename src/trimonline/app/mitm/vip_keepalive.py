@@ -46,7 +46,7 @@ PLATFORMS = {
         "name": "芒果TV",
         "state": "vip_mgtv_state",
         "file": "mgtv_state.json",
-        "auth": ["UID"],
+        "auth": ["UID", "loginAccount", "id"],
         "urls": ["https://www.mgtv.com/", "https://i.mgtv.com/account"],
     },
 }

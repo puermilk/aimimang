@@ -377,6 +377,9 @@ def _rewrite_playlist(playlist, base_url, bridge_base):
             out.append(f"{bridge_base}/s/seg.ts?u={_b64(abs_url)}")
         else:
             out.append(line)
+    if out and out[0].strip() == "#EXTM3U":
+        if not any(x.strip().startswith("#EXT-X-PLAYLIST-TYPE") for x in out):
+            out.insert(1, "#EXT-X-PLAYLIST-TYPE:VOD")
     return "\n".join(out)
 
 # ============ HTTP 服务 ============
@@ -530,10 +533,25 @@ class Handler(BaseHTTPRequestHandler):
                     q.get("u", [""])[0],
                     live=(q.get("live", [""])[0] == "1"))
             if path == "/health":
-                state = {"cookies": bool(migu.ck),
-                         "has_mgnd_session": "mgnd_session_id" in migu.ck,
-                         "logged": bool(migu.ck.get("MIGU_UID")),
-                         "uid": migu.ck.get("MIGU_UID", "")}
+                try:
+                    migu.refresh()
+                except Exception:
+                    pass
+                # 咪咕登录态不是 MIGU_UID：真实 cookie 是 userInfo / UserInfo /
+                # checked_token（userInfo 里含 userId + userToken）。旧判断永远
+                # false，导致已登录也显示「未识别登录」。
+                ck = migu.ck or {}
+                ui = str(ck.get("userInfo") or "") + str(ck.get("UserInfo") or "")
+                uid = ""
+                if ui:
+                    import re as _re
+                    mm = _re.search(r"userId[^0-9]{0,4}(\d{6,})", ui)
+                    if mm:
+                        uid = mm.group(1)
+                state = {"cookies": bool(ck),
+                         "has_mgnd_session": "mgnd_session_id" in ck,
+                         "logged": bool(ui and ("userToken" in ui or ck.get("checked_token"))),
+                         "uid": uid}
                 return self._json({"ok": 1, "service": "migu-bridge", "login": state})
             self.send_error(404)
         except BrokenPipeError:

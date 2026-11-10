@@ -284,11 +284,18 @@ def _rewrite_playlist(playlist, base_url, bridge_base):
     out = []
     for line in playlist.splitlines():
         s = line.strip()
+        # 去掉芒果私有的 #EXT-MGTV-* 标签。部分播放器看到未知标签
+        # 会反复重试/不推进时间轴，表现为“一个分片卡 30 秒”。
+        if s.startswith("#EXT-MGTV"):
+            continue
         if s and not s.startswith("#") and (".ts" in s or ".m4s" in s):
             abs_url = s if s.startswith("http") else base_dir + s
             out.append(f"{bridge_base}/s/seg.ts?u={_b64(abs_url)}")
         else:
             out.append(line)
+    if out and out[0].strip() == "#EXTM3U":
+        if not any(x.strip().startswith("#EXT-X-PLAYLIST-TYPE") for x in out):
+            out.insert(1, "#EXT-X-PLAYLIST-TYPE:VOD")
     return "\n".join(out)
 
 # ============ HTTP ============
@@ -355,11 +362,11 @@ class Handler(BaseHTTPRequestHandler):
                             macs.append(detail_mac(cid))
                         except Exception as e:
                             log("detail fail", cid, repr(e)[:120])
-                    # 预热第一集
+                    # 预热前 3 集（首播解析要开无头浏览器，约 7 秒）
                     for m in macs[:1]:
-                        mm = re.search(r"/p/(\d+)\.m3u8", m.get("vod_play_url") or "")
-                        if mm:
-                            threading.Thread(target=_warm, args=(mm.group(1),), daemon=True).start()
+                        vids = re.findall(r"/p/(\d+)\.m3u8", m.get("vod_play_url") or "")
+                        for vid0 in vids[:3]:
+                            threading.Thread(target=_warm, args=(vid0,), daemon=True).start()
                     return self._json(mac_list(macs))
                 wd = (q.get("wd") or [""]).pop()
                 if not wd:
@@ -385,7 +392,16 @@ class Handler(BaseHTTPRequestHandler):
             if path.startswith("/s/"):
                 return self.serve_segment(q.get("u", [""])[0])
             if path == "/health":
-                state = {"cookies": bool(mgtv.ck), "uid": mgtv.ck.get("UID", "")}
+                try:
+                    mgtv.refresh()
+                except Exception:
+                    pass
+                ck = mgtv.ck or {}
+                state = {
+                    "cookies": bool(ck),
+                    "uid": ck.get("UID") or ck.get("loginAccount") or ck.get("id", ""),
+                    "logged": bool(ck.get("UID") or ck.get("loginAccount") or ck.get("id")),
+                }
                 return self._json({"ok": 1, "service": "mgtv-bridge", "login": state})
             self.send_error(404)
         except BrokenPipeError:
@@ -398,10 +414,10 @@ class Handler(BaseHTTPRequestHandler):
                 pass
 
     def serve_playlist(self, vid):
-        cached = cache_get(f"playlist:{vid}", 60)
+        cached = cache_get(f"playlist:{vid}", 180)
         if cached:
             return self._m3u8(cached)
-        m3u8_url = cache_get(f"m3u8:{vid}", 120)
+        m3u8_url = cache_get(f"m3u8:{vid}", 1800)
         if not m3u8_url:
             page_url = cache_get(f"page:{vid}", 24 * 3600)
             if not page_url:
@@ -436,10 +452,27 @@ class Handler(BaseHTTPRequestHandler):
             playlist, base_url = _resolve_playlist(m3u8_url)
         except Exception as e:
             log("resolve fail", vid, repr(e)[:120])
-            return self.send_error(502)
+            playlist, base_url = "", ""
         if not playlist:
-            log("playlist empty", vid)
-            return self.send_error(502)
+            # 缓存的签名 URL 可能过期；清掉后重新开一次浏览器解析。
+            log("playlist retry worker", vid)
+            cache_del(f"m3u8:{vid}")
+            cache_del(f"playlist:{vid}")
+            page_url = cache_get(f"page:{vid}", 24 * 3600)
+            out = _worker_out("play", vid)
+            res = _run_worker("play", page_url or _page_url_from_vid(vid) or "", out, timeout=45)
+            if not res or not res.get("ok") or not res.get("m3u8"):
+                log("playlist retry fail", vid)
+                return self.send_error(502)
+            m3u8_url = res["m3u8"]
+            cache_put(f"m3u8:{vid}", m3u8_url)
+            try:
+                playlist, base_url = _resolve_playlist(m3u8_url)
+            except Exception as e:
+                log("resolve retry fail", vid, repr(e)[:120])
+                return self.send_error(502)
+            if not playlist:
+                return self.send_error(502)
         rewritten = _rewrite_playlist(playlist, base_url, _base())
         cache_put(f"playlist:{vid}", rewritten)
         log("m3u8 ok", vid, "segs=", rewritten.count("/s/seg.ts"))
@@ -454,8 +487,12 @@ class Handler(BaseHTTPRequestHandler):
         if not url.startswith("http"):
             return self.send_error(400)
         import requests
+        hdr = _headers()
+        rng = self.headers.get("Range")
+        if rng:
+            hdr["Range"] = rng
         try:
-            r = requests.get(url, headers=_headers(), timeout=30)
+            r = requests.get(url, headers=hdr, timeout=30)
         except Exception as e:
             log("ts fail", repr(e)[:120])
             return self.send_error(502)
@@ -465,20 +502,38 @@ class Handler(BaseHTTPRequestHandler):
         ct = r.headers.get("Content-Type", "video/mp2t")
         if "octet-stream" in ct:
             ct = "video/mp2t"
-        self.send_response(200)
+        body = r.content
+        code = r.status_code
+        crange = r.headers.get("Content-Range", "")
+        if rng and code == 200:
+            # 上游不支持 Range 时本地切片，仍给播放器一个标准的 206。
+            import re as _re
+            m = _re.match(r"bytes=(\d*)-(\d*)", rng)
+            if m:
+                total = len(body)
+                start = int(m.group(1) or 0)
+                end = int(m.group(2) or total - 1)
+                end = min(end, total - 1)
+                if start < total:
+                    body = body[start:end + 1]
+                    code = 206
+                    crange = "bytes %d-%d/%d" % (start, end, total)
+        self.send_response(code)
         self.send_header("Content-Type", ct)
-        self.send_header("Content-Length", str(len(r.content)))
+        self.send_header("Content-Length", str(len(body)))
         self.send_header("Accept-Ranges", "bytes")
+        if crange:
+            self.send_header("Content-Range", crange)
         self._cors()
         self.end_headers()
         try:
-            self.wfile.write(r.content)
+            self.wfile.write(body)
         except BrokenPipeError:
             pass
 
 def _warm(vid):
     try:
-        cached = cache_get(f"m3u8:{vid}", 120)
+        cached = cache_get(f"m3u8:{vid}", 1800)
         if cached:
             return
         page_url = cache_get(f"page:{vid}", 24 * 3600)

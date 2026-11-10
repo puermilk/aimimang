@@ -319,6 +319,11 @@ _HGDJ = {"ts": 0.0, "items": {}, "order": [], "task": None,
          "next_page": {}, "all_loaded": False}
 _HGDJ_CFG = {"ts": 0.0, "enabled": False, "base": HGDJ_DEFAULT_URL}
 
+# 咪咕电视直播：独立伪媒体库（不混在搜索结果里）
+MIGU_LIVE_LIB_GUID = "on" + hashlib.md5(b"fnv-migu-live").hexdigest()[:30]
+MIGU_LIVE_LIB_NAME = "咪咕直播"
+_MIGU_LIVE = {"ts": 0.0, "guids": []}
+
 # 豆瓣榜单分类 → 伪媒体库（每个分类一个独立库，侧栏分别显示）
 # (key, 显示名, 豆瓣type, 豆瓣tag, 条目数, 前端category)
 # tag 均取豆瓣 search_subjects 实测可用的标签
@@ -347,7 +352,8 @@ def item_guid_of(cat_key, douban_id):
 
 
 LIB_GUIDS = {c[0]: lib_guid_of(c[0]) for c in DOUBAN_CATS}
-ALL_LIB_GUIDS = set(LIB_GUIDS.values()) | {FAKE_LIB_GUID, HGDJ_LIB_GUID}
+ALL_LIB_GUIDS = set(LIB_GUIDS.values()) | {
+    FAKE_LIB_GUID, HGDJ_LIB_GUID, MIGU_LIVE_LIB_GUID}
 DOUBAN_TTL = 1800          # 豆瓣榜单缓存
 RESOLVE_NEG_TTL = 600      # 解析失败后的重试间隔
 AD_MAX_DUR = 30.0          # 广告分组时长上限（秒）
@@ -520,6 +526,12 @@ def note_watch(guid, pos, extra=None, user=None):
         # 这里只忽略这种上报；真正的删除走 play/record DELETE（界面里删除记录）。
         return
     rec = {"ts": pos, "at": int(time.time()), "g": guid, "u": uid}
+    base = registry.get(guid) or {}
+    if isinstance(base, dict):
+        for k in ("title", "pic", "site", "referer", "series",
+                  "episode_number", "tv"):
+            if base.get(k) is not None and k not in rec:
+                rec[k] = base.get(k)
     rec.update(extra or {})
     watch[key] = rec
     mine = [(k, v) for k, v in watch.items()
@@ -569,8 +581,19 @@ def watch_list(user=None):
     for guid, rec in sorted(chosen.items(),
                             key=lambda kv: kv[1].get("at", 0), reverse=True):
         r = registry.get(guid)
-        if not isinstance(r, dict) or not (r.get("eps") or []):
-            continue                      # 片源已失效的不再展示
+        if not isinstance(r, dict):
+            r = {}
+        if not (r.get("eps") or []):
+            # 片源条目不在本次 registry 里（进程重启/搜索缓存被清）时，
+            # 不要让整条继续播放记录消失；用记录自身信息兜底展示。
+            r = dict(r)
+            r["title"] = (r.get("title") or rec.get("title") or "在线影片")
+            r["pic"] = r.get("pic") or rec.get("pic") or ""
+            r["site"] = r.get("site") or rec.get("site") or ""
+            r["overview"] = r.get("overview") or ""
+            r["eps"] = [{"name": "正片", "url": ""}]
+            r["resolved_at"] = int(rec.get("at") or 0)
+            r["_watch_stub"] = True
         tkey = _rec_title_key(guid, r)    # 换源后同一部片只留最近的一条
         if tkey:
             if tkey in seen_titles:
@@ -579,8 +602,15 @@ def watch_list(user=None):
         item = build_item(guid, r)
         item["last_play"] = True
         item["visible"] = True
-        item["watched_ts"] = rec.get("at", 0)
-        item["play_position"] = rec.get("ts", 0)
+        # 官方 item_user_play.update_time / 前端 watched_ts 都是毫秒；
+        # 这里以前写的是秒，会被前端当成 1970 年，继续播放列表因此不显示。
+        _pos = rec.get("ts", 0) or 0
+        item["watched_ts"] = int(float(rec.get("at") or 0) * 1000)
+        item["play_position"] = _pos
+        # 客户端（尤其 iOS）继续播放卡片用 ts 画进度；只给 play_position
+        # 会导致进度 0，部分客户端还会把这种记录当作未开始而隐藏。
+        item["ts"] = _pos
+        item["watched"] = 0
         item["play_error"] = ""
         out.append(item)
     return out
@@ -617,7 +647,11 @@ def _http_status(head):
 
 
 def _merge_play_items(local, online):
-    """官方本地继续播放 + 在线继续播放，按 guid 去重（本地优先）。"""
+    """官方本地继续播放 + 在线继续播放，按 guid 去重并按最近观看倒序。
+
+    以前直接 local + online 拼接，客户端只取前 12 条；本地旧记录一多，
+    刚看的在线 VIP 记录就被挤到 12 条之外，看起来像「继续播放不显示」。
+    """
     out, seen = [], set()
     for it in list(local or []) + list(online or []):
         if not isinstance(it, dict):
@@ -628,6 +662,20 @@ def _merge_play_items(local, online):
         if g:
             seen.add(g)
         out.append(it)
+
+    def _recent_ts(it):
+        v = (it.get("watched_ts") or it.get("update_time")
+             or it.get("ts") or 0)
+        try:
+            v = float(v)
+        except (TypeError, ValueError):
+            v = 0.0
+        # 官方字段有的是秒，有的是毫秒；统一成毫秒再排序。
+        if 0 < v < 1e12:
+            v *= 1000
+        return v
+
+    out.sort(key=_recent_ts, reverse=True)
     return out
 
 
@@ -1012,6 +1060,22 @@ def _bg_collect(t, qkey):
     t.add_done_callback(_cb)
 
 
+_VIP_ITEM_ORDER = {"爱奇艺VIP": 0, "咪咕VIP": 1, "芒果VIP": 2}
+
+
+def _vip_first_sort(items):
+    """三个 VIP 源固定排在最前（AI/MI/MANG），其余保持原顺序。"""
+    if not items:
+        return items
+
+    def _rank(it):
+        an = str(it.get("ancestor_name") or "").split(" · ", 1)[0]
+        return _VIP_ITEM_ORDER.get(an, 99)
+
+    items.sort(key=_rank)
+    return items
+
+
 async def online_search(kw, _allow_fallback=True):
     if not kw:
         return []
@@ -1024,7 +1088,7 @@ async def online_search(kw, _allow_fallback=True):
         hit = _cache_get(cache_key, max_age=_SEARCH_TTL)
         if hit:
             log(f"online search '{kw}' -> {len(hit)} 条（缓存补全，慢源已陆续到齐）")
-            return hit
+            return _vip_first_sort(hit)
     sem = asyncio.Semaphore(4)
     mode, p_sites, f_sites, js_limit = cms_plan()
     levels = [p_sites + f_sites] if mode == "parallel" else [p_sites, f_sites]
@@ -1125,6 +1189,9 @@ async def online_search(kw, _allow_fallback=True):
                  if it.get("guid") not in have]
         if extra:
             items = items + extra      # 上一轮后台补齐的结果一并带上
+        # 三个 VIP 源的结果统一排在最前，保证同一次搜索里
+        # 爱奇艺 / 咪咕 / 芒果 的金框封面都能出现在第一屏。
+        _vip_first_sort(items)
         save_registry()
         _cache_put(cache_key, items)
         log(f"online search '{kw}' -> {len(items)} 条"
@@ -1518,6 +1585,91 @@ def fake_mdb_info(cat_key):
     }
 
 
+def migu_live_enabled():
+    cfg = load_config()
+    return bool(cfg.get("vip_unlocked") and cfg.get("vip_migu_live"))
+
+
+async def fetch_migu_live_all(force=False):
+    """从咪咕桥拉取电视直播频道，登记成独立伪库条目。"""
+    if not migu_live_enabled():
+        return list(_MIGU_LIVE.get("guids") or [])
+    now = time.time()
+    if not force and _MIGU_LIVE.get("guids") and now - _MIGU_LIVE.get("ts", 0) < 300:
+        return list(_MIGU_LIVE["guids"])
+    cfg = load_config()
+    port = _vip_port(cfg.get("vip_migu_port"), 8771)
+    url = ("http://127.0.0.1:%d/live.php/provide/vod/"
+           "?ac=videolist&wd=%%E7%%9B%%B4%%E6%%92%%AD" % port)
+    try:
+        async with session.get(url, timeout=aiohttp.ClientTimeout(total=10)) as r:
+            j = json.loads((await r.read()).decode("utf-8", "replace"))
+    except Exception as e:
+        log("migu live fetch err", repr(e)[:100])
+        return list(_MIGU_LIVE.get("guids") or [])
+    gl = []
+    for it in (j.get("list") or []):
+        if not isinstance(it, dict):
+            continue
+        pid = str(it.get("vod_id") or "").strip()
+        name = str(it.get("vod_name") or "").strip()
+        if not pid or not name:
+            continue
+        play = str(it.get("vod_play_url") or "")
+        u = play.split("$", 1)[1] if "$" in play else play
+        u = u.split("#", 1)[0].strip()
+        if not u.startswith("http"):
+            continue
+        g = "on" + hashlib.md5(("fnv-migu-live-" + pid).encode()).hexdigest()[:30]
+        rec = registry.get(g) or {}
+        rec.update({
+            "title": name, "site": MIGU_LIVE_LIB_NAME,
+            "pic": it.get("vod_pic") or "", "referer": "https://www.miguvideo.com/",
+            "overview": "咪咕电视直播频道", "remarks": it.get("vod_remarks") or "直播",
+            "eps": [{"name": "直播", "url": u}],
+            "resolved_at": int(time.time()), "live": True,
+        })
+        registry[g] = rec
+        gl.append(g)
+    _MIGU_LIVE.update({"ts": now, "guids": gl})
+    save_registry()
+    log("migu live library:", len(gl), "channels")
+    return gl
+
+
+def migu_live_lib_info():
+    guids = list(_MIGU_LIVE.get("guids") or [])
+    covers = []
+    for g in guids:
+        p = (registry.get(g) or {}).get("pic") or ""
+        if p and p not in covers:
+            covers.append(p)
+        if len(covers) >= 6:
+            break
+    n = len(guids)
+    return {
+        "guid": MIGU_LIVE_LIB_GUID, "name": MIGU_LIVE_LIB_NAME,
+        "title": MIGU_LIVE_LIB_NAME, "category": "Movie", "dir_list": [],
+        "lan": "zh-CN", "auto_scrap_subtitle": 0, "include_adult": False,
+        "subtitle_lan": "zh-CN", "poster": covers[0] if covers else "",
+        "poster_type": 0, "posters": covers, "view_type": 0,
+        "refresh_disabled": True, "prefer_local_nfo": 0, "skip_filesize": 1,
+        "auto_progress_thumb": 0, "last_update_time": int(time.time()),
+        "sort_num": 0, "type": "Movie", "number_of_episodes": n,
+        "number_of_seasons": 0, "season_number": 0, "episode_number": 0,
+        "overview": "咪咕电视直播频道", "vote_average": "0", "genres": [],
+        "content_ratings": "", "runtime": 0, "is_favorite": 0,
+        "is_watched": 0, "watched_ts": 0, "can_play": 1, "play_error": "",
+        "parent_guid": "", "ancestor_guid": "", "ancestor_name": "",
+        "ancestor_category": "Movie", "trim_id": "", "original_title": "",
+        "play_item_guid": "", "duration": 0, "logic_type": 0,
+        "backdrops": covers[0] if covers else "",
+        "markedForDeletion": False,
+        "media_stream": {"resolutions": ["1080p"], "audio_type": ["Stereo"],
+                         "color_range_type": ["SDR"]},
+    }
+
+
 def fake_mdb_list():
     """所有伪库的列表项（mediadb/list 注入）"""
     out = []
@@ -1527,6 +1679,8 @@ def fake_mdb_list():
             out.append(info)
     if hgdj_config()[0]:
         out.append(hgdj_lib_info())
+    if migu_live_enabled() and _MIGU_LIVE.get("guids"):
+        out.append(migu_live_lib_info())
     return out
 
 
@@ -2091,16 +2245,35 @@ def hgdj_synth_play(guid, rec, headers=None):
 
 
 # --------------------------------------------------------- 伪造响应构造 ---
+def _is_vip_rec(rec):
+    site = str((rec or {}).get("site") or "")
+    return site in ("爱奇艺VIP", "咪咕VIP", "芒果VIP") or site in ("AI", "MI", "MANG")
+
+
+def _vip_img_url(pic):
+    if not str(pic or "").startswith("http"):
+        return pic
+    # 用官方同样的根相对路径。客户端会把它拼到 /v/api/v1/sys/img 后面，
+    # 也可能直接当图片地址用；两种方式都由本机处理，不再依赖 Host。
+    # v=3 用于强制客户端丢弃以前没有金框的旧缓存。
+    return ("/v/__mitm__/vipimg?v=3&u="
+            + urllib.parse.quote(str(pic), safe=""))
+
+
 def _item_poster(rec):
     """封面选择：采集站封面优先（无防盗链）；豆瓣封面有 Referer 防盗链且
     前端只会原样使用 http 开头地址，未解析出采集站封面时留空走前端占位图。"""
+    vip = _is_vip_rec(rec)
     pic = (rec.get("pic_cms") or "").strip()
     if pic.startswith("http"):
-        return pic
+        # 三个 VIP 源必须统一走金框；不能因为有 pic_cms 就绕过。
+        return _vip_img_url(pic) if vip else pic
     if rec.get("site") == "豆瓣热播":
         return ""
     pic = (rec.get("pic") or "").strip()
-    return pic if pic.startswith("http") else (rec.get("pic_proxy") or "")
+    if pic.startswith("http"):
+        return _vip_img_url(pic) if vip else pic
+    return rec.get("pic_proxy") or ""
 
 
 def build_item(guid, rec):
@@ -2122,6 +2295,9 @@ def build_item(guid, rec):
         "title": rec.get("title", ""),
         "original_title": rec.get("title", ""),
         "backdrops": poster, "posters": poster, "poster": poster,
+        # 官方 item 都有封面尺寸；继续播放卡片会用它算宽高，缺失时
+        # 部分客户端（iOS）会把卡片算成 0 高，看起来像「没有记录」。
+        "poster_width": 400, "poster_height": 600,
         "vote_average": str(rec.get("vote") or "0"),
         "vote_count": 0,
         "year": rec.get("year") or 0,
@@ -2183,6 +2359,7 @@ def to_search_item(guid, rec):
         "type": "TV" if is_tv else "Movie",
         "genres": [],
         "poster": _item_poster(rec),
+        "poster_width": 400, "poster_height": 600,
         "runtime": 0,
         "is_favorite": 0, "watched": 0, "watched_ts": 0,
         "vote_average": str(rec.get("vote") or "0"),
@@ -2237,6 +2414,19 @@ async def hgdj_search_items(kw, limit=12):
 
 
 _SUB_MAP = {}
+_PUBLIC_BASE = ""
+
+
+def _public_base_of(headers):
+    """客户端实际访问用的 http(s)://host；VIP 封面必须是绝对地址。"""
+    h = str(headers.get("host") or headers.get("x-forwarded-host") or "").strip()
+    if not h or h == "x" or h.startswith(("127.0.0.1", "localhost")):
+        return ""
+    proto = str(headers.get("x-forwarded-proto") or "").split(",")[0].strip().lower()
+    if proto not in ("http", "https"):
+        # 5667 是 HTTPS；没有端口通常是 443 反代；其余按 HTTP。
+        proto = "https" if (h.endswith(":5667") or ":" not in h) else "http"
+    return proto + "://" + h
 
 
 def _sub_for(rec, guid, ep_index=0):
@@ -2963,7 +3153,9 @@ def cms_plan():
     if limit > 0:
         p = p[:limit]
         f = f[:max(0, limit - len(p))]
-    p = p + vip_sites()
+    # VIP 源放在最前面：普通采集源太多时，VIP 结果会被挤到搜索结果后面，
+    # 客户端只显示第一页时看起来就像「只有一个 VIP 有金框」。
+    p = vip_sites() + p
     return mode, p, f, js_limit
 
 
@@ -3015,11 +3207,7 @@ def vip_sites(cfg=None):
                     "api": "http://127.0.0.1:%d/api.php/provide/vod/" % mp,
                     "referer": "https://www.miguvideo.com/",
                     "lines": "multi", "kind": "cms", "timeout": 20})
-        if cfg.get("vip_migu_live"):
-            out.append({"name": "咪咕直播",
-                        "api": "http://127.0.0.1:%d/live.php/provide/vod/" % mp,
-                        "referer": "https://www.miguvideo.com/",
-                        "lines": "single", "kind": "cms", "timeout": 15})
+        # 直播不再作为搜索源，改成独立媒体库（见 MIGU_LIVE_LIB_GUID）。
     if cfg.get("vip_mgtv", True):
         out.append({"name": "芒果VIP",
                     "api": "http://127.0.0.1:%d/api.php/provide/vod/" % tp,
@@ -3673,11 +3861,12 @@ async def write_head(writer, status, hdrs):
 
 
 # ------------------------------------------------------------- HLS 代理 ---
-def proxied(url, referer=""):
+def proxied(url, referer="", seg=False):
     q = "u=" + urllib.parse.quote(url, safe="")
     if referer:
         q += "&r=" + urllib.parse.quote(referer, safe="")
-    return "/v/media/online/seg?" + q
+    # 分片带上 .ts 后缀：部分播放器/HLS 解析器只认带扩展名的分片 URL。
+    return ("/v/media/online/seg.ts?" if seg else "/v/media/online/seg?") + q
 
 
 
@@ -4211,7 +4400,8 @@ def rewrite_playlist(text, base_url, referer, props=None):
                     s = re.sub(r'URI="([^"]+)"', _rep, s)
                 out.append(s)
             else:
-                out.append(proxied(urllib.parse.urljoin(base_url, s), referer))
+                out.append(proxied(urllib.parse.urljoin(base_url, s), referer,
+                                   seg=True))
         prev_media = True
 
     if ndrop:
@@ -4450,10 +4640,16 @@ async def _proxy_once(target, hdrs, referer, client_headers, writer,
                     s0, s1 = mm.group(1), mm.group(2)
                     if s0:
                         st_i = int(s0)
-                        en_i = int(s1) if s1 else st_i + len(first) - 1
-                        if len(first) == 2048 and cl:
-                            total = int(cl)
-                            en_i = min(en_i, total - 1)
+                        # 客户端常见请求是 bytes=0-（开放式），不能只返回
+                        # 首包 2048 字节，否则播放器解出来的 TS 是截断的。
+                        if s1:
+                            en_i = int(s1)
+                        elif cl:
+                            en_i = int(cl) - 1
+                        else:
+                            en_i = st_i + len(first) - 1
+                        if cl:
+                            en_i = min(en_i, int(cl) - 1)
                         rest_all = b""
                         while len(first) + len(rest_all) <= en_i - st_i + 1:
                             chunk = await resp.content.read(65536)
@@ -4730,6 +4926,7 @@ async def serve_manifest(guid, ep_index, headers, writer, line=None):
     """在线影片的主清单入口：解析片源 → 逐个候选尝试 → 写响应"""
     rec = registry.get(guid)
     if not rec:
+        log("serve_manifest no rec:", guid)
         await write_head(writer, 404, {"Content-Length": 0, "Connection": "close"})
         writer.close()
         return
@@ -4768,6 +4965,78 @@ async def serve_manifest(guid, ep_index, headers, writer, line=None):
     writer.close()
 
 
+def _vip_border_image(url, raw):
+    """给 VIP 源封面加金框，并按 2:3 竖向裁切；失败返回原图字节。"""
+    import hashlib
+    from io import BytesIO
+    cache_dir = os.path.join(DATA_DIR, "vipimg")
+    try:
+        os.makedirs(cache_dir, exist_ok=True)
+        fp = os.path.join(cache_dir, hashlib.md5(url.encode()).hexdigest() + ".jpg")
+        if os.path.exists(fp):
+            return open(fp, "rb").read()
+        from PIL import Image, ImageOps
+        im = Image.open(BytesIO(raw)).convert("RGB")
+        w, h = im.size
+        # 竖版 2:3：横向图从中间裁切
+        want = 2.0 / 3.0
+        if w / h > want:
+            nw = int(h * want)
+            left = max(0, (w - nw) // 2)
+            im = im.crop((left, 0, left + nw, h))
+        elif w / h < want:
+            nh = int(w / want)
+            top = max(0, (h - nh) // 2)
+            im = im.crop((0, top, w, top + nh))
+        im.thumbnail((420, 630), Image.LANCZOS)
+        out = ImageOps.expand(im, border=9, fill=(212, 175, 55))
+        out = ImageOps.expand(out, border=2, fill=(24, 24, 24))
+        buf = BytesIO()
+        out.save(buf, format="JPEG", quality=88)
+        body = buf.getvalue()
+        open(fp, "wb").write(body)
+        return body
+    except Exception:
+        return raw
+
+
+async def serve_vip_image(writer, src):
+    """VIP 封面：拉原图 → 2:3 竖裁 → 金框。sys/img 与 /v/__mitm__/vipimg 共用。"""
+    u = urllib.parse.unquote(src or "")
+    if not u.startswith("http"):
+        await write_head(writer, 404, {"Content-Length": 0,
+                                       "Connection": "close"})
+        writer.close()
+        return
+    try:
+        host = (urllib.parse.urlparse(u).hostname or "").lower()
+        ref = ("https://www.iqiyi.com/" if "iqiyi" in host else
+               "https://www.mgtv.com/" if "mgtv" in host else
+               "https://www.miguvideo.com/")
+        fetch_u = u
+        # 爱奇艺封面常给 .avif，服务器同时提供同名 .jpg；PIL 默认不带 AVIF。
+        if fetch_u.lower().endswith(".avif"):
+            fetch_u = fetch_u[:-5] + ".jpg"
+        async with session.get(
+                fetch_u, headers={"User-Agent": UA, "Referer": ref},
+                timeout=aiohttp.ClientTimeout(total=20)) as r:
+            raw = await r.read()
+        if not raw or raw.lstrip()[:1] in (b"<", b"{"):
+            raise ValueError("not an image")
+        body = await asyncio.to_thread(_vip_border_image, u, raw)
+        await write_head(writer, 200, {
+            "Content-Type": "image/jpeg",
+            "Content-Length": len(body),
+            "Cache-Control": "public, max-age=86400",
+            "Connection": "keep-alive"})
+        writer.write(body)
+    except Exception as e:
+        log("vipimg fail", repr(e)[:100])
+        await write_head(writer, 404, {"Content-Length": 0,
+                                       "Connection": "close"})
+    await writer.drain()
+
+
 # -------------------------------------------------------------- 分发 ---
 async def handle_request(reader, writer, head, headers, body):
     reqline = head.split(b"\r\n", 1)[0].decode("latin-1")
@@ -4776,6 +5045,10 @@ async def handle_request(reader, writer, head, headers, body):
         return
     method, target = parts[0], parts[1]
     path, query = parse_query(target)
+    # 记录客户端访问用的 Host，VIP 封面需要绝对地址才能在搜索结果里显示。
+    _pb = _public_base_of(headers)
+    if _pb:
+        globals()["_PUBLIC_BASE"] = _pb
 
     # 看门狗健康探测（systemd watchdog 用，判断 socket 是否仍被 MITM 接管）
     if path == "/v/__mitm__/refresh":
@@ -4808,6 +5081,10 @@ async def handle_request(reader, writer, head, headers, body):
         writer.write(json_response({"mitm": 1, "pid": os.getpid(),
                                     "registry": len(registry)}))
         await writer.drain()
+        return
+
+    if path == "/v/__mitm__/vipimg":
+        await serve_vip_image(writer, (query.get("u") or [""])[0])
         return
 
     # ---- 配置页（爱迷茫 · 在线源设置）-------------------------------------
@@ -5093,6 +5370,10 @@ async def handle_request(reader, writer, head, headers, body):
             await writer.drain()
             return
         kw = (query.get("q") or [""])[0]
+        global _PUBLIC_BASE
+        _pb = _public_base_of(headers)
+        if _pb:
+            _PUBLIC_BASE = _pb
         online_t = asyncio.create_task(online_search(kw)) if kw else None
         raw = await forward(head, headers, body)
         _, body_b = split_response(raw)
@@ -5128,8 +5409,26 @@ async def handle_request(reader, writer, head, headers, body):
     #     查找必然失败。这里识别并改为远程代理，海报才能显示。
     if path.startswith(SYS_IMG_PREFIX):
         tail = path[len(SYS_IMG_PREFIX):]
+        # 客户端把根相对 VIP 封面拼成 /v/api/v1/sys/img/v/__mitm__/vipimg...
+        if tail.startswith("/v/__mitm__/vipimg"):
+            _src = (query.get("u") or [""])[0]
+            if not _src:
+                _src = (urllib.parse.parse_qs(
+                    urllib.parse.urlparse(tail).query).get("u") or [""])[0]
+            await serve_vip_image(writer, _src)
+            return
         if tail.startswith("http://") or tail.startswith("https://"):
             tail = urllib.parse.unquote(tail)
+            try:
+                _pu = urllib.parse.urlparse(tail)
+            except Exception:
+                _pu = None
+            if _pu is not None and _pu.path == "/v/__mitm__/vipimg":
+                _src = (query.get("u") or [""])[0]
+                if not _src:
+                    _src = (urllib.parse.parse_qs(_pu.query).get("u") or [""])[0]
+                await serve_vip_image(writer, _src)
+                return
             ref = ""
             if "doubanio" in tail or "douban" in tail:
                 ref = "https://movie.douban.com/"     # 豆瓣图防盗链
@@ -5202,7 +5501,7 @@ async def handle_request(reader, writer, head, headers, body):
                     writer.close()
                 return
         # 分片/外部资源直连代理（u= 目标地址）
-        if path == "/v/media/online/seg":
+        if path in ("/v/media/online/seg", "/v/media/online/seg.ts"):
             u = urllib.parse.unquote((query.get("u") or [""])[0])
             r = urllib.parse.unquote((query.get("r") or [""])[0])
             if u.startswith("http"):
@@ -5279,6 +5578,12 @@ async def handle_request(reader, writer, head, headers, body):
                                         "data": hgdj_lib_info()}))
             await writer.drain()
             return
+        if lg == MIGU_LIVE_LIB_GUID:
+            await fetch_migu_live_all()
+            writer.write(json_response({"msg": "", "code": 0,
+                                        "data": migu_live_lib_info()}))
+            await writer.drain()
+            return
         for ck, g in LIB_GUIDS.items():
             if lg == g:
                 await fetch_douban_cat(ck)
@@ -5308,7 +5613,8 @@ async def handle_request(reader, writer, head, headers, body):
         if FAKE_LIB_GUID in parents and not cks:
             cks = ["hot_movie", "hot_tv"]      # 旧单库 → 兼容映射
         want_hgdj = HGDJ_LIB_GUID in parents
-        if cks or want_hgdj:
+        want_migu_live = MIGU_LIVE_LIB_GUID in parents
+        if cks or want_hgdj or want_migu_live:
             try:
                 page = max(1, int(bj.get("page") or 1))
             except Exception:
@@ -5323,6 +5629,12 @@ async def handle_request(reader, writer, head, headers, body):
                 for g in douban_cat_guids(ck):
                     items.append(build_item(g, registry[g]))
             total_hgdj = 0
+            if want_migu_live:
+                await fetch_migu_live_all()
+                for g in _MIGU_LIVE.get("guids") or []:
+                    rec = registry.get(g)
+                    if isinstance(rec, dict):
+                        items.append(build_item(g, rec))
             if want_hgdj:
                 await fetch_hgdj_all()
                 total_hgdj = _hgdj_total()
@@ -5375,6 +5687,8 @@ async def handle_request(reader, writer, head, headers, body):
                 asyncio.create_task(fetch_douban_all())   # 预热各分类
                 if hgdj_config()[0]:
                     asyncio.create_task(fetch_hgdj_all())
+                if migu_live_enabled():
+                    await fetch_migu_live_all()
                 fake = fake_mdb_list()
                 j["data"] = libs + fake
                 log(f"mediadb/list: 官方 {len(libs)} 个 + 伪库 {len(fake)} "
@@ -5408,6 +5722,8 @@ async def handle_request(reader, writer, head, headers, body):
                         d[LIB_GUIDS[ck]] = n
                 if hgdj_config()[0] and hgdj_series_guids():
                     d[HGDJ_LIB_GUID] = len(hgdj_series_guids())
+                if migu_live_enabled() and _MIGU_LIVE.get("guids"):
+                    d[MIGU_LIVE_LIB_GUID] = len(_MIGU_LIVE["guids"])
                 log(f"mediadb/sum: {len(d)} 个库计数")
                 writer.write(json_response(j))
         except Exception:
@@ -5453,7 +5769,12 @@ async def handle_request(reader, writer, head, headers, body):
             j = json.loads(rbody.decode("utf-8", "replace"))
         except Exception:
             j = None
-        online = watch_list(req_user) if allow_online else []
+        # 播放记录始终按当前用户返回：即使用户现在没有在线源权限，
+        # 也不应该把他自己看过的记录藏掉（记录本身已按 user_guid 隔离）。
+        online = watch_list(req_user)
+        log("play/list user:", (req_user or {}).get("username") or "-",
+            "guid:", (req_user or {}).get("guid") or "-",
+            "online:", len(online), "allow:", allow_online)
         # 官方明确返回 501（接口未实现）或根本不是 JSON 时，本地列表拿不到，
         # 至少把在线列表还给前端；但 401/403 等登录/鉴权错误必须原样透传，
         # 不能用一个「看起来成功」的在线列表把登录问题盖掉。
@@ -5531,7 +5852,9 @@ async def handle_request(reader, writer, head, headers, body):
                 except Exception:
                     pos_s = 0
                 log(f"play/record: {(registry[main_gid].get('title') or '')[:16]} "
-                    f"{pos_s}s")
+                    f"{pos_s}s", "user:",
+                    (req_user or {}).get("username") or "-",
+                    (req_user or {}).get("guid") or "-")
             writer.write(json_response({"msg": "", "code": 0, "data": None}))
             await writer.drain()
             return

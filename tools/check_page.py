@@ -203,8 +203,8 @@ var vl = E("vipLoginBox").innerHTML || "";
 ck(vl.indexOf("扫码登录") >= 0 && vl.indexOf("短信登录") >= 0,
    "三个平台都有「扫码登录 / 短信登录」按钮");
 ck(vl.indexOf("立即保活") >= 0, "三个平台都有「立即保活」按钮");
-ck(vl.indexOf("芒果TV") >= 0 && vl.indexOf("爱奇艺") >= 0 && vl.indexOf("咪咕") >= 0,
-   "登录界面包含爱奇艺 / 咪咕 / 芒果TV");
+ck(vl.indexOf(">AI<") >= 0 && vl.indexOf(">MI<") >= 0 && vl.indexOf(">MANG<") >= 0,
+   "登录界面包含 AI / MI / MANG");
 ck(vl.indexOf("登录态已导入") >= 0, "已配置的平台显示登录态状态");
 ck((E("vipState").textContent || "").indexOf("爱奇艺") >= 0,
    "VIP 开关状态显示当前启用的源");

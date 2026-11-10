@@ -61,12 +61,13 @@ class VipTest(unittest.TestCase):
         self.assertFalse(ok)
         self.assertFalse(cfg.get("vip_migu_live"))
 
-    def test_migu_live_only_when_migu_enabled(self):
-        mitm.vip_apply({"code": "aimimang", "migu": False, "migu_live": True})
+    def test_migu_live_is_separate_library_not_search_source(self):
+        # 直播是独立媒体库，不再作为搜索源；搜索源里只应有三路 VIP。
+        mitm.vip_apply({"code": "aimimang", "migu": True, "migu_live": True})
+        self.assertTrue(mitm.migu_live_enabled())
         names = [s["name"] for s in mitm.vip_sites()]
         self.assertNotIn("咪咕直播", names)
-        mitm.vip_apply({"migu": True, "migu_live": True})
-        self.assertIn("咪咕直播", [s["name"] for s in mitm.vip_sites()])
+        self.assertIn("咪咕VIP", names)
 
     def test_vip_sites_follow_switches(self):
         mitm.vip_apply({"code": "aimimang", "iqiyi": True, "migu": False,
@@ -174,13 +175,44 @@ class JsSearchTest(unittest.TestCase):
         self.assertEqual(len(got), 10)
 
 
+class VipCoverTest(unittest.TestCase):
+    def test_vip_poster_uses_root_relative_gold_endpoint(self):
+        u = mitm._vip_img_url("https://pic.example/a.jpg")
+        self.assertTrue(u.startswith("/v/__mitm__/vipimg?v=3&u="))
+
+    def test_vip_results_sort_first(self):
+        items = [
+            {"ancestor_name": "量子 · 更新至1集"},
+            {"ancestor_name": "芒果VIP · 共1集"},
+            {"ancestor_name": "爱奇艺VIP · 共1集"},
+            {"ancestor_name": "咪咕VIP · 共1集"},
+        ]
+        got = mitm._vip_first_sort(items)
+        names = [x["ancestor_name"].split(" · ")[0] for x in got[:3]]
+        self.assertEqual(names, ["爱奇艺VIP", "咪咕VIP", "芒果VIP"])
+
+    def test_build_item_has_cover_dims(self):
+        guid = "on" + "c" * 30
+        item = mitm.build_item(guid, {
+            "title": "测试片", "site": "爱奇艺VIP",
+            "pic": "https://pic.example/a.jpg",
+            "eps": [{"name": "正片", "url": "http://example.test/a.m3u8"}],
+        })
+        self.assertEqual(item["poster_width"], 400)
+        self.assertEqual(item["poster_height"], 600)
+        self.assertTrue(
+            item["poster"].startswith("/v/__mitm__/vipimg?v=3&u="))
+
+
 class PageTest(unittest.TestCase):
-    def test_page_has_unlock_live_and_cast_copy(self):
+    def test_page_has_unlock_live_and_login_copy(self):
         page = webui.PAGE
         for needle in ("暗号", "开启爱奇艺", "开启咪咕", "开启芒果",
-                       "看直播电视", "手机投屏", "免责声明", "会员",
-                       "扫码登录", "短信登录", "保活"):
+                       "看直播电视", "VIP 在线源接进来", "已识别登录",
+                       "建议短信登录", "扫码登录", "短信登录", "保活",
+                       "会员", "2.0.0 正式版"):
             self.assertIn(needle, page, "配置页缺少：%s" % needle)
+        self.assertNotIn("手机投屏", page)
 
     def test_secret_code_not_hardcoded_in_page(self):
         self.assertNotIn("aimimang", webui.PAGE)

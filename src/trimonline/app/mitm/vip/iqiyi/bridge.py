@@ -444,6 +444,10 @@ class Handler(BaseHTTPRequestHandler):
                 tvid = (q.get("t") or [""])[0]
                 return serve_segment(self, tvid)
             if path == "/health":
+                try:
+                    iq.refresh()
+                except Exception:
+                    pass
                 state = {"P00001": bool(iq.P), "device": iq.dev, "uid": iq.uid}
                 return self._json({"ok": 1, "service": "iqiyi-bridge", "login": state})
             self.send_error(404)
@@ -765,7 +769,7 @@ def serve_playlist(self, tvid, media_only=False):
         except Exception:
             pass
         return self._m3u8(_master_m3u8(
-            tvid, sub=bool(d.get("sub")), bid=d.get("bid") or "600"))
+            tvid, sub=False, bid=d.get("bid") or "600"))
     if iq_dash.is_drm(tvid):
         log("p DRM, 拒绝:", tvid)
         return self.send_error(403)
@@ -821,7 +825,7 @@ def serve_playlist(self, tvid, media_only=False):
     # ---- 返回主清单(不再注入 HLS 字幕轨，改用外挂字幕) ----
     if not media_only:
         log("master for", tvid, "segs:", n, "templates:", len(templates))
-        return self._m3u8(_master_m3u8(tvid, sub=bool(st.get("subtitle"))))
+        return self._m3u8(_master_m3u8(tvid, sub=False))
     log("playlist for", tvid, "segs:", n, "templates:", len(templates))
 
     return self._m3u8(media)
