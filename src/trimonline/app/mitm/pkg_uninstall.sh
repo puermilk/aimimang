@@ -10,8 +10,9 @@ DIR=/usr/local/trim_media_mitm
 # 2) 移除可再生产物（代码/venv/引擎），保留数据：
 #    online_registry.json（在线条目）、watch_history.json（继续播放）、
 #    conf/（源配置 + js_cache/ 站点规则缓存）
-for f in mitm.py webui.py jsspider.py source_check.py ensure_takeover.sh watchdog.sh \
-         setup_units.sh teardown_units.sh pkg_install.sh pkg_uninstall.sh \
+for f in mitm.py webui.py jsspider.py source_check.py viplogin.py vip_keepalive.py \
+         ensure_takeover.sh watchdog.sh setup_units.sh teardown_units.sh \
+         pkg_install.sh pkg_uninstall.sh \
          update_fty.py update_fty.log watchdog.log maintenance.log pkg.log; do
     rm -f "$DIR/$f"
 done

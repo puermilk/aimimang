@@ -200,7 +200,9 @@ ck(!!E("btnVipLock").onclick, "「关闭 VIP」按钮已绑定处理函数");
 ck(E("vipLockBox").style.display !== "none", "暗号输入框始终可见（已开启也不隐藏）");
 ck(!!E("btnVipSave").onclick, "「保存 VIP 开关」按钮已绑定处理函数");
 var vl = E("vipLoginBox").innerHTML || "";
-ck(vl.indexOf("导入登录态") >= 0, "三个平台都有「导入登录态」按钮");
+ck(vl.indexOf("扫码登录") >= 0 && vl.indexOf("短信登录") >= 0,
+   "三个平台都有「扫码登录 / 短信登录」按钮");
+ck(vl.indexOf("立即保活") >= 0, "三个平台都有「立即保活」按钮");
 ck(vl.indexOf("芒果TV") >= 0 && vl.indexOf("爱奇艺") >= 0 && vl.indexOf("咪咕") >= 0,
    "登录界面包含爱奇艺 / 咪咕 / 芒果TV");
 ck(vl.indexOf("登录态已导入") >= 0, "已配置的平台显示登录态状态");

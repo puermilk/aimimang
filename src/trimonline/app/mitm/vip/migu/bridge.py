@@ -530,7 +530,10 @@ class Handler(BaseHTTPRequestHandler):
                     q.get("u", [""])[0],
                     live=(q.get("live", [""])[0] == "1"))
             if path == "/health":
-                state = {"cookies": bool(migu.ck), "has_mgnd_session": "mgnd_session_id" in migu.ck}
+                state = {"cookies": bool(migu.ck),
+                         "has_mgnd_session": "mgnd_session_id" in migu.ck,
+                         "logged": bool(migu.ck.get("MIGU_UID")),
+                         "uid": migu.ck.get("MIGU_UID", "")}
                 return self._json({"ok": 1, "service": "migu-bridge", "login": state})
             self.send_error(404)
         except BrokenPipeError:

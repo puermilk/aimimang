@@ -21,6 +21,7 @@ import json
 import os
 import re
 import sqlite3
+import subprocess
 import sys
 import tempfile
 import time
@@ -45,6 +46,13 @@ try:                                  # JS 蜘蛛引擎（drpy2 on QuickJS）
 except Exception as _e:               # 引擎缺失只影响 JS 源，不影响 CMS 源
     jsspider = None
     _JS_ERR = repr(_e)[:120]
+
+try:                                  # VIP 扫码 / 短信登录会话（Playwright）
+    import viplogin
+    _VIPLOGIN_ERR = ""
+except Exception as _e:
+    viplogin = None
+    _VIPLOGIN_ERR = repr(_e)[:160]
 
 try:                                  # 采集站返回体解析（JSON / XML 都吃）
     import source_check
@@ -102,6 +110,7 @@ UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
 #   fallback —— 兜底：priority 下仅当主用全部落空才查；parallel 下与主用一起查
 #   查询方式见 conf/config.json 的 source_mode；source_limit 控制最多启用几个源。
 CONF_DIR = "/usr/local/trim_media_mitm/conf"
+DATA_DIR = "/usr/local/trim_media_mitm/vip_data"
 SOURCES_FILE = os.path.join(CONF_DIR, "sources.json")
 CONFIG_FILE = os.path.join(CONF_DIR, "config.json")
 
@@ -3053,7 +3062,7 @@ def vip_states_payload(cfg=None):
     return out
 
 
-def vip_import_state(platform, state):
+def vip_import_state(platform, state, path=None):
     """保存浏览器导出的登录态；非法数据不落盘。返回 (ok, msg)。"""
     platform = str(platform or "").lower()
     if platform not in _VIP_PLATFORM_FILES:
@@ -3071,7 +3080,7 @@ def vip_import_state(platform, state):
     for c in ck:
         if not isinstance(c, dict) or not c.get("name") or "value" not in c:
             return False, "cookies 条目格式不对（至少要有 name / value）"
-    path = vip_state_path(platform)
+    path = path or vip_state_path(platform)
     try:
         os.makedirs(os.path.dirname(path), exist_ok=True)
         tmp = path + ".tmp"
@@ -3125,8 +3134,8 @@ async def vip_health_payload():
             health = {"ok": 0, "why": repr(health)[:80]}
         login = health.get("login") if isinstance(health, dict) else None
         logged = bool(isinstance(login, dict) and (
-            login.get("P00001") or login.get("cookies")
-            or login.get("has_mgnd_session")))
+            login.get("logged") or login.get("P00001")
+            or (login.get("cookies") and login.get("uid"))))
         out[platform] = {
             "port": port,
             "running": bool(isinstance(health, dict) and health.get("ok")),
@@ -3152,6 +3161,45 @@ def vip_status_payload():
         "vip_sites": [s["name"] for s in sites],
         "vip_states": vip_states_payload(cfg),
     }
+
+
+_VIP_LOGIN = None
+
+
+def vip_login_manager():
+    global _VIP_LOGIN
+    if _VIP_LOGIN is None and viplogin is not None:
+        _VIP_LOGIN = viplogin.LoginManager(vip_import_state)
+    return _VIP_LOGIN
+
+
+def vip_keepalive_status():
+    path = os.path.join(DATA_DIR, "keepalive.json")
+    try:
+        return json.load(open(path, encoding="utf-8"))
+    except Exception:
+        return {}
+
+
+def vip_keepalive_start(platform=""):
+    """启动保活脚本（后台进程，不阻塞配置页）。"""
+    script = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                          "vip_keepalive.py")
+    if not os.path.isfile(script):
+        return False, "保活脚本缺失"
+    env = dict(os.environ)
+    env.setdefault("AIMIMANG_CONF", CONF_DIR)
+    env.setdefault("AIMIMANG_DATA", DATA_DIR)
+    env.setdefault("AIMIMANG_CHROMIUM", os.environ.get("AIMIMANG_CHROMIUM", ""))
+    args = [sys.executable, script]
+    if platform:
+        args += ["--platform", str(platform)]
+    try:
+        subprocess.Popen(args, env=env, stdout=subprocess.DEVNULL,
+                         stderr=subprocess.DEVNULL, start_new_session=True)
+        return True, "保活已开始"
+    except Exception as e:
+        return False, "启动保活失败：%s" % repr(e)[:120]
 
 
 def public_config():
@@ -4818,6 +4866,47 @@ async def handle_request(reader, writer, head, headers, body):
             writer.write(json_response({"ok": ok, "msg": msg,
                                         **vip_status_payload()},
                                        extra=ensure_cookie(headers)))
+        elif path == "/v/__mitm__/api/vip/login/start" and method == "POST":
+            req = _json_body(body)
+            mgr = vip_login_manager()
+            if mgr is None:
+                writer.write(json_response({"ok": False,
+                                            "msg": "登录组件不可用：" + _VIPLOGIN_ERR}))
+            else:
+                platform = str(req.get("platform") or "").lower()
+                r = mgr.start(platform, req.get("mode") or "qr",
+                              req.get("phone") or "",
+                              vip_state_path(platform))
+                writer.write(json_response({**r, **vip_status_payload()}))
+        elif path == "/v/__mitm__/api/vip/login/status":
+            platform = (query.get("platform") or [""])[0]
+            mgr = vip_login_manager()
+            session = (mgr.status(platform) if mgr else
+                       {"platform": platform, "state": "idle", "alive": False,
+                        "message": "登录组件不可用：" + _VIPLOGIN_ERR})
+            writer.write(json_response({"ok": True, "session": session,
+                                        "vip_login": session,
+                                        **vip_status_payload()}))
+        elif path == "/v/__mitm__/api/vip/login/verify" and method == "POST":
+            req = _json_body(body)
+            mgr = vip_login_manager()
+            ok, msg = (mgr.verify(req.get("platform") or "", req.get("code") or "")
+                       if mgr else (False, "登录组件不可用：" + _VIPLOGIN_ERR))
+            writer.write(json_response({"ok": ok, "msg": msg}))
+        elif path == "/v/__mitm__/api/vip/login/cancel" and method == "POST":
+            req = _json_body(body)
+            mgr = vip_login_manager()
+            ok, msg = (mgr.cancel(req.get("platform") or "")
+                       if mgr else (False, "登录组件不可用：" + _VIPLOGIN_ERR))
+            writer.write(json_response({"ok": ok, "msg": msg}))
+        elif path == "/v/__mitm__/api/vip/keepalive" and method == "POST":
+            req = _json_body(body)
+            ok, msg = vip_keepalive_start(str(req.get("platform") or ""))
+            writer.write(json_response({"ok": ok, "msg": msg,
+                                        "keepalive": vip_keepalive_status()}))
+        elif path == "/v/__mitm__/api/vip/keepalive":
+            writer.write(json_response({"ok": True,
+                                        "keepalive": vip_keepalive_status()}))
         elif path == "/v/__mitm__/api/vip/state" and method == "POST":
             req = _json_body(body)
             platform = str(req.get("platform") or "").lower()
@@ -4832,6 +4921,7 @@ async def handle_request(reader, writer, head, headers, body):
         elif path == "/v/__mitm__/api/vip":
             writer.write(json_response({"ok": True,
                                         "vip_health": await vip_health_payload(),
+                                        "keepalive": vip_keepalive_status(),
                                         **vip_status_payload()},
                                        extra=ensure_cookie(headers)))
         elif path == "/v/__mitm__/api/config":

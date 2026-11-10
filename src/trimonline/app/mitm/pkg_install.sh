@@ -11,8 +11,9 @@ mkdir -p "$DIR"
 echo "$(date '+%F %T') pkg_install: src=$SRC" >> "$LOG"
 
 # 1) 复制运行文件
-for f in mitm.py webui.py jsspider.py source_check.py ensure_takeover.sh watchdog.sh \
-         setup_units.sh teardown_units.sh pkg_install.sh pkg_uninstall.sh; do
+for f in mitm.py webui.py jsspider.py source_check.py viplogin.py vip_keepalive.py \
+         ensure_takeover.sh watchdog.sh setup_units.sh teardown_units.sh \
+         pkg_install.sh pkg_uninstall.sh; do
     [ -f "$SRC/$f" ] && cp -f "$SRC/$f" "$DIR/$f"
 done
 # 1b) 清掉老版本（1.0.0 / 1.1.0）遗留在本机的「内置订阅抓取」相关产物：
@@ -69,6 +70,8 @@ for name in iqiyi migu mgtv; do
     systemctl enable "trim-media-vip-$name.service" >/dev/null 2>&1
     systemctl restart "trim-media-vip-$name.service" >/dev/null 2>&1
 done
+systemctl enable trim-media-vip-keepalive.timer >/dev/null 2>&1
+systemctl start trim-media-vip-keepalive.timer >/dev/null 2>&1
 
 # 3) 拉起接管
 systemctl restart trim-media-mitm.service

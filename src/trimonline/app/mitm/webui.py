@@ -610,11 +610,11 @@ pre{background:#0d1117;border:1px solid var(--line);border-radius:8px;
         「看直播电视」仅在「开启咪咕」时生效，提供咪咕电视直播频道。
       </span>
     </div>
-    <div class="sep">会员登录（只导入登录态，不保存账号密码）</div>
+    <div class="sep">会员登录（扫码 / 手机验证码）</div>
     <div class="sub" style="margin:-4px 0 8px;font-size:12.5px">
-      在电脑浏览器登录对应平台后，用 Cookie 导出扩展导出 <span class="mono">storage_state.json</span>
-      （或 <span class="mono">{"cookies":[...]}</span>），在下面选择文件导入。
-      登录态只保存在本机 <span class="mono">conf/*_state.json</span>，不会上传、不会打进安装包。
+      点「扫码登录」用对应平台 App 扫码，或点「短信登录」输入手机号和平台发来的验证码。
+      插件不保存账号密码；登录态只保存在本机 <span class="mono">conf/*_state.json</span>，
+      不会上传、不会打进安装包。登录后由定时器每 6 小时自动保活。
     </div>
     <div id="vipLoginBox"></div>
     <div id="vipMsg" class="sub" style="margin:8px 0 0;font-size:12px"></div>
@@ -753,11 +753,22 @@ pre{background:#0d1117;border:1px solid var(--line);border-radius:8px;
   <pre id="cli"></pre>
 </div>
 
+<div id="vipLoginMask" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.68);z-index:50;align-items:center;justify-content:center;padding:16px">
+  <div class="card" style="width:min(560px,100%);max-height:90vh;overflow:auto;margin:0">
+    <div class="row" style="justify-content:space-between">
+      <h2 id="vipLoginTitle" style="margin:0">登录</h2>
+      <button class="ghost" onclick="closeVipLogin()">关闭</button>
+    </div>
+    <div id="vipLoginBody" style="margin-top:12px"></div>
+    <div id="vipLoginMsg" class="sub" style="margin:10px 0 0;font-size:12.5px"></div>
+  </div>
+</div>
+
 <script>
 var S = {primary:[], fallback:[], js:[], VIS:"admin", ALLOW:[], USERS:[],
          MODE:"priority", LIMIT:0, JLIMIT:0,
          VIP:{unlocked:false, iqiyi:true, migu:true, migu_live:false,
-              mgtv:true}, VIPSTATES:{}, VIPHEALTH:{}};
+              mgtv:true}, VIPSTATES:{}, VIPHEALTH:{}, KEEPALIVE:{}};
 var LAST = null;
 var UNLOCK_CMD = "curl -s --unix-socket /var/run/trim_media.sock -X POST " +
   "-H 'Content-Type: application/json' " +
@@ -860,6 +871,15 @@ function renderJsTable(){
 }
 
 var VIP_NAMES = {iqiyi:"爱奇艺", migu:"咪咕", mgtv:"芒果TV"};
+var VIP_LOGIN = {platform:null, timer:null, mode:"qr"};
+
+function timeAgo(ts){
+  var d = Math.max(0, Math.floor(Date.now()/1000 - (ts||0)));
+  if (d < 60) return "刚刚";
+  if (d < 3600) return Math.floor(d/60) + " 分钟前";
+  if (d < 86400) return Math.floor(d/3600) + " 小时前";
+  return Math.floor(d/86400) + " 天前";
+}
 
 function renderVipLogin(){
   var box = document.getElementById("vipLoginBox");
@@ -877,15 +897,22 @@ function renderVipLogin(){
       ? '<span class="tag ' + (hh.logged ? "ok" : "warn") + '">采集桥运行中 · '
         + (hh.logged ? "已识别登录" : "未识别登录") + '</span>'
       : '<span class="tag bad">采集桥未运行</span>';
-    h += '<div class="row" style="gap:10px;margin-top:8px;padding-top:8px;'
+    var ka = (S.KEEPALIVE || {})[p] || {};
+    var kaTag = ka.ts
+      ? '<span class="tag ' + (ka.ok ? "ok" : "warn") + '">保活 '
+        + (ka.ok ? "正常" : "待重新登录") + ' · ' + timeAgo(ka.ts) + '</span>'
+      : '<span class="tag dim">未保活</span>';
+    h += '<div class="row" style="gap:8px;margin-top:8px;padding-top:8px;'
        + 'border-top:1px solid var(--line)">'
        + '<b style="min-width:58px">' + name + '</b>' + stateTag + runTag
-       + '<button class="ghost" onclick="document.getElementById(\'vipFile_' + p + '\').click()">导入登录态</button>'
-       + '<input type="file" id="vipFile_' + p + '" accept=".json,application/json" '
-       + 'style="display:none" onchange="vipPick(\'' + p + '\',this)">'
+       + '<button onclick="startVipLogin(\'' + p + '\',\'qr\')">扫码登录</button>'
+       + '<button class="ghost" onclick="startVipLogin(\'' + p + '\',\'sms\')">短信登录</button>'
+       + '<button class="ghost" onclick="keepaliveNow(\'' + p + '\')">立即保活</button>'
+       + kaTag
        + '<button class="ghost" onclick="vipClear(\'' + p + '\')">清空</button>'
-       + '<span style="color:var(--dim);font-size:11.5px">' + esc(st.path||"") + '</span>'
-       + '</div>';
+       + '</div>'
+       + '<div class="mono" style="font-size:11px;margin:2px 0 0 66px">'
+       + esc(st.path||"") + (ka.error ? (' · ' + esc(ka.error)) : '') + '</div>';
   });
   box.innerHTML = h;
 }
@@ -962,6 +989,7 @@ function applyVip(d){
   if (!d) return;
   if (d.vip_states) S.VIPSTATES = d.vip_states;
   if (d.vip_health) S.VIPHEALTH = d.vip_health;
+  if (d.keepalive) S.KEEPALIVE = d.keepalive;
   if (d.vip_unlocked !== undefined) {
     S.VIP = {unlocked: !!d.vip_unlocked,
              iqiyi: !!d.vip_iqiyi, migu: !!d.vip_migu,
@@ -1144,6 +1172,110 @@ function drawWrite(w){
   document.getElementById("wcl").textContent = UNLOCK_CMD;
 }
 
+function vipLoginMsg(s){ var e=document.getElementById("vipLoginMsg"); if(e) e.textContent=s||""; }
+function vipLoginBody(h){ var e=document.getElementById("vipLoginBody"); if(e) e.innerHTML=h; }
+
+function startVipLogin(platform, mode){
+  VIP_LOGIN.platform = platform; VIP_LOGIN.mode = mode;
+  document.getElementById("vipLoginTitle").textContent =
+    (VIP_NAMES[platform]||platform) + (mode === "qr" ? " · 扫码登录" : " · 短信登录");
+  document.getElementById("vipLoginMask").style.display = "flex";
+  vipLoginMsg("");
+  if (mode === "sms"){
+    vipLoginBody('<div class="row"><input id="vipPhone" placeholder="手机号（仅用于接收平台验证码）" '
+      + 'style="width:230px" inputmode="numeric">'
+      + '<button onclick="sendVipSms(\'' + platform + '\')">发送验证码</button></div>'
+      + '<div class="sub" style="font-size:12px;margin-top:8px">'
+      + '验证码由平台直接发送到你的手机；插件只在本机填写，不保存手机号。</div>');
+    return;
+  }
+  beginVipLogin(platform, "qr", "");
+}
+
+function beginVipLogin(platform, mode, phone){
+  vipLoginMsg("正在打开登录窗口…");
+  api("/v/__mitm__/api/vip/login/start", {platform:platform, mode:mode, phone:phone})
+    .then(function(d){
+      if (!d.ok){ vipLoginMsg(d.msg || "启动失败"); return; }
+      vipLoginMsg((d.session && d.session.message) || "请稍候…");
+      pollVipLogin(platform);
+    }).catch(function(e){ vipLoginMsg("启动失败：" + e.message); });
+}
+
+function sendVipSms(platform){
+  var el = document.getElementById("vipPhone");
+  var phone = (el && el.value || "").replace(/\s+/g, "");
+  if (!/^1\d{10}$/.test(phone)){ vipLoginMsg("请输入 11 位手机号"); return; }
+  beginVipLogin(platform, "sms", phone);
+}
+
+function renderVipCodeForm(platform){
+  if (document.getElementById("vipCodeInput")) return;
+  vipLoginBody('<div class="row"><input id="vipCodeInput" placeholder="短信验证码" '
+    + 'style="width:180px" inputmode="numeric">'
+    + '<button onclick="verifyVipSms(\'' + platform + '\')">登录</button></div>');
+}
+
+function verifyVipSms(platform){
+  var el = document.getElementById("vipCodeInput");
+  var code = (el && el.value || "").replace(/\s+/g, "");
+  if (!/^\d{4,8}$/.test(code)){ vipLoginMsg("请输入短信里的验证码"); return; }
+  api("/v/__mitm__/api/vip/login/verify", {platform:platform, code:code})
+    .then(function(d){ vipLoginMsg(d.msg || ""); })
+    .catch(function(e){ vipLoginMsg("提交失败：" + e.message); });
+}
+
+function pollVipLogin(platform){
+  if (VIP_LOGIN.timer) clearInterval(VIP_LOGIN.timer);
+  VIP_LOGIN.timer = setInterval(function(){
+    api("/v/__mitm__/api/vip/login/status?platform=" + encodeURIComponent(platform))
+      .then(function(d){
+        var s = (d && d.session) || d.vip_login || {};
+        if (s.message) vipLoginMsg(s.message);
+        if (s.state === "qr" && s.qr){
+          var img = document.getElementById("vipQr");
+          if (!img || img.getAttribute("data-qr") !== s.qr.slice(-80)){
+            vipLoginBody('<div style="text-align:center"><img id="vipQr" data-qr="'
+              + esc(s.qr.slice(-80)) + '" src="' + s.qr + '" '
+              + 'style="width:260px;height:260px;object-fit:contain;background:#fff;'
+              + 'border-radius:10px;padding:6px"><div class="sub" '
+              + 'style="font-size:12px;margin-top:6px">用对应平台 App 扫码</div></div>');
+          }
+        }
+        if (s.state === "need_code") renderVipCodeForm(platform);
+        if (s.state === "success"){
+          clearInterval(VIP_LOGIN.timer); VIP_LOGIN.timer = null;
+          vipLoginMsg(s.message || "登录成功");
+          refreshVip();
+          setTimeout(function(){ document.getElementById("vipLoginMask").style.display = "none"; }, 900);
+        }
+        if (s.state === "error" || s.state === "expired"){
+          clearInterval(VIP_LOGIN.timer); VIP_LOGIN.timer = null;
+          refreshVip();
+        }
+      }).catch(function(){});
+  }, 1500);
+}
+
+function closeVipLogin(){
+  var p = VIP_LOGIN.platform;
+  if (VIP_LOGIN.timer){ clearInterval(VIP_LOGIN.timer); VIP_LOGIN.timer = null; }
+  document.getElementById("vipLoginMask").style.display = "none";
+  if (p) api("/v/__mitm__/api/vip/login/cancel", {platform:p}).catch(function(){});
+  VIP_LOGIN.platform = null;
+}
+
+function keepaliveNow(platform){
+  log("正在保活 " + (VIP_NAMES[platform]||platform) + " …");
+  api("/v/__mitm__/api/vip/keepalive", {platform:platform})
+    .then(function(d){
+      log(d.msg || "保活已开始");
+      setTimeout(refreshVip, 4000);
+      setTimeout(refreshVip, 12000);
+      setTimeout(refreshVip, 25000);
+    }).catch(function(e){ log("保活失败：" + e.message); });
+}
+
 function load(){
   api("/v/__mitm__/api/sources").then(function(d){
     S.primary = (d.primary||[]).slice();
@@ -1159,6 +1291,7 @@ function load(){
              migu: !!d.vip_migu, migu_live: !!d.vip_migu_live,
              mgtv: !!d.vip_mgtv};
     S.VIPSTATES = d.vip_states || {};
+    S.KEEPALIVE = d.keepalive || {};
     if (d.file) document.getElementById("file").textContent = d.file;
     if (d.write) drawWrite(d.write);
     if (d.msg) log(d.msg);

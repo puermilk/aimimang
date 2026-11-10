@@ -100,6 +100,40 @@ WantedBy=multi-user.target
 EOF
 done
 
+cat > "$U/trim-media-vip-keepalive.service" <<EOF
+[Unit]
+Description=aimimang VIP cookie keepalive
+After=network-online.target trim-media-vip-iqiyi.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+Environment=AIMIMANG_CONF=$DIR/conf
+Environment=AIMIMANG_DATA=$DIR/vip_data
+Environment=PYTHONPATH=$DIR/lib
+Environment=PLAYWRIGHT_BROWSERS_PATH=$DIR/vip_data/ms-playwright
+Environment=AIMIMANG_CHROMIUM=/usr/bin/chromium
+WorkingDirectory=$DIR
+ExecStart=/usr/bin/python3 $DIR/vip_keepalive.py
+StandardOutput=append:$DIR/vip_data/keepalive.log
+StandardError=append:$DIR/vip_data/keepalive.log
+EOF
+
+cat > "$U/trim-media-vip-keepalive.timer" <<EOF
+[Unit]
+Description=Run VIP cookie keepalive every 6 hours
+
+[Timer]
+OnBootSec=15min
+OnUnitActiveSec=6h
+AccuracySec=1min
+Persistent=true
+Unit=trim-media-vip-keepalive.service
+
+[Install]
+WantedBy=timers.target
+EOF
+
 chmod +x "$DIR"/*.sh 2>/dev/null
 systemctl daemon-reload
 exit 0

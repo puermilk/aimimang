@@ -143,7 +143,7 @@ class PageTest(unittest.TestCase):
         page = webui.PAGE
         for needle in ("暗号", "开启爱奇艺", "开启咪咕", "开启芒果",
                        "看直播电视", "手机投屏", "免责声明", "会员",
-                       "导入登录态", "storage_state"):
+                       "扫码登录", "短信登录", "保活"):
             self.assertIn(needle, page, "配置页缺少：%s" % needle)
 
     def test_secret_code_not_hardcoded_in_page(self):
