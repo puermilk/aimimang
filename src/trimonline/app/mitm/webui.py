@@ -555,7 +555,7 @@ pre{background:#0d1117;border:1px solid var(--line);border-radius:8px;
 <body><div class="wrap">
 
 <h1>爱迷茫</h1>
-<div class="sub">飞牛影视在线源插件 · <b style="color:var(--ok)">2.0.0 正式版</b> · 源设置（<span class="mono" id="file">conf/sources.json</span>）<br>
+<div class="sub">飞牛影视在线源插件 · <b style="color:var(--ok)">2.0.1 正式版</b> · 源设置（<span class="mono" id="file">conf/sources.json</span>）<br>
   VIP 源 在下方，需先输入暗号开启。</div>
 
 <div class="note"><b>声明</b>：本插件只是一个「播放器侧」的中转工具，不含任何影视内容，
@@ -619,6 +619,16 @@ pre{background:#0d1117;border:1px solid var(--line);border-radius:8px;
     <div id="vipLoginBox"></div>
     <div id="vipMsg" class="sub" style="margin:8px 0 0;font-size:12px"></div>
   </div>
+</div>
+
+<div class="card">
+  <h2>Chromium 浏览器（MI / MANG）</h2>
+  <div class="sub" style="margin:-6px 0 10px;font-size:12.5px">
+    MI / MANG 的扫码、短信登录和取 m3u8 需要 Chromium。
+    优先使用 NAS 自带的 <span class="mono">/usr/bin/chromium</span>；没有时可以点下面的按钮安装。
+    AI 源和 MI 直播不依赖 Chromium。
+  </div>
+  <div id="chromiumBox" class="sub">检测中…</div>
 </div>
 
 <div class="card">
@@ -942,6 +952,48 @@ function refreshVip(){
   return api("/v/__mitm__/api/vip").then(function(d){
     applyVip(d);
   }).catch(function(){});
+}
+
+function refreshChromium(){
+  return api("/v/__mitm__/api/chromium").then(function(d){
+    var box = document.getElementById("chromiumBox");
+    if (!box) return;
+    if (d.available){
+      box.innerHTML = '<span class="tag ok">已就绪</span> '
+        + '<span class="mono">' + esc(d.path || "") + '</span>';
+      return;
+    }
+    var h = '<div class="note"><b>未检测到 Chromium。</b> '
+      + 'AI 源、MI 直播仍可使用；MI / MANG 的登录和取流需要 Chromium。</div>';
+    h += '<div class="row"><button id="btnChromium">安装 Chromium（约 150MB）</button>'
+      + '<span id="chromiumMsg" class="sub"></span></div>';
+    if (d.log) h += '<pre style="max-height:180px;overflow:auto;margin-top:6px">' + esc(d.log) + '</pre>';
+    box.innerHTML = h;
+    var b = document.getElementById("btnChromium");
+    if (b) b.onclick = installChromium;
+    if (d.installing){
+      var m = document.getElementById("chromiumMsg");
+      if (m) m.textContent = "正在下载安装，请稍候…";
+      setTimeout(refreshChromium, 4000);
+    }
+  }).catch(function(e){
+    var box = document.getElementById("chromiumBox");
+    if (box) box.textContent = "检测失败：" + e.message;
+  });
+}
+
+function installChromium(){
+  var b = document.getElementById("btnChromium");
+  var m = document.getElementById("chromiumMsg");
+  if (b) b.disabled = true;
+  if (m) m.textContent = "正在启动下载…";
+  api("/v/__mitm__/api/chromium/install", {}).then(function(d){
+    if (m) m.textContent = d.msg || "";
+    setTimeout(refreshChromium, 2000);
+  }).catch(function(e){
+    if (m) m.textContent = "安装失败：" + e.message;
+    if (b) b.disabled = false;
+  });
 }
 
 function renderVip(){
@@ -1300,6 +1352,7 @@ function load(){
     }
     draw();
     refreshVip();
+    refreshChromium();
   }).catch(function(e){ log("读取配置失败：" + e.message); });
 }
 

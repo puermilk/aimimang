@@ -9,11 +9,17 @@ LOG=$DIR/pkg.log
 
 mkdir -p "$DIR"
 echo "$(date '+%F %T') pkg_install: src=$SRC" >> "$LOG"
+SRC_REAL="$(cd "$SRC" 2>/dev/null && pwd -P || true)"
+DIR_REAL="$(cd "$DIR" 2>/dev/null && pwd -P || true)"
+IN_PLACE=0
+[ -n "$SRC_REAL" ] && [ "$SRC_REAL" = "$DIR_REAL" ] && IN_PLACE=1
+
+if [ "$IN_PLACE" -eq 0 ]; then
 
 # 1) 复制运行文件
 for f in mitm.py webui.py jsspider.py source_check.py viplogin.py vip_keepalive.py \
-         ensure_takeover.sh watchdog.sh setup_units.sh teardown_units.sh \
-         pkg_install.sh pkg_uninstall.sh; do
+         chromium_path.py ensure_takeover.sh watchdog.sh setup_units.sh \
+         teardown_units.sh pkg_install.sh pkg_uninstall.sh; do
     [ -f "$SRC/$f" ] && cp -f "$SRC/$f" "$DIR/$f"
 done
 # 1b) 清掉老版本（1.0.0 / 1.1.0）遗留在本机的「内置订阅抓取」相关产物：
@@ -59,7 +65,14 @@ if [ -d "$SRC/lib" ]; then
     cp -a "$SRC/lib" "$DIR/lib"
 fi
 chmod +x "$DIR"/*.sh 2>/dev/null
+# Chromium 检测：不静默下载，只给出明确提示；配置页有「安装 Chromium」按钮。
+if ! /usr/bin/python3 "$DIR/chromium_path.py" >/dev/null 2>&1; then
+    echo "提示：未检测到 Chromium。AI 源和 MI 直播仍可使用；MI / MANG 的登录和取 m3u8 需要 Chromium。" | tee -a "$LOG"
+    echo "      安装完成后打开配置页，点「安装 Chromium（约 150MB）」即可；不会静默下载。" | tee -a "$LOG"
+fi
 # 注意：online_registry.json / watch_history.json 属于用户数据，永不覆盖
+
+fi
 
 # 2) 写单元并启用
 bash "$DIR/setup_units.sh"

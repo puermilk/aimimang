@@ -225,13 +225,25 @@ class LabelTest(unittest.TestCase):
         self.assertEqual(mitm.migu_live_lib_info()["name"], "MI 直播")
 
 
+class ChromiumTest(unittest.TestCase):
+    def test_existing_chromium_is_detected_and_not_redownloaded(self):
+        from chromium_path import find_chromium
+        if not find_chromium():
+            self.skipTest("本机没有 Chromium，跳过")
+        st = mitm._chromium_status()
+        self.assertTrue(st["available"])
+        ok, msg = mitm._start_chromium_install()
+        self.assertFalse(ok)
+        self.assertIn("已就绪", msg)
+
+
 class PageTest(unittest.TestCase):
     def test_page_has_unlock_live_and_login_copy(self):
         page = webui.PAGE
         for needle in ("暗号", "开启 AI", "开启 MI", "开启 MANG",
                        "看直播电视", "VIP 在线源接进来", "已识别登录",
                        "建议短信登录", "扫码登录", "短信登录", "保活",
-                       "会员", "2.0.0 正式版"):
+                       "会员", "2.0.1 正式版"):
             self.assertIn(needle, page, "配置页缺少：%s" % needle)
         self.assertNotIn("手机投屏", page)
 

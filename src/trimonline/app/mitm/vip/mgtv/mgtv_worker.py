@@ -16,8 +16,9 @@ from playwright.async_api import async_playwright
 UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
       "(KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36")
 DEFAULT_STATE = "/root/mgtv_login/storage_state.json"
-CHROMIUM = os.environ.get("AIMIMANG_CHROMIUM") or (
-    "/usr/bin/chromium" if os.path.exists("/usr/bin/chromium") else "")
+from chromium_path import find_chromium
+
+CHROMIUM = find_chromium()
 
 
 async def _new_page(p, storage_state):

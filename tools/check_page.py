@@ -75,6 +75,9 @@ __routes["/v/__mitm__/api/sources"] = {
   engine:{available:true, why:"drpy2 + cheerio + QuickJS 就绪",
           engine:"QuickJS + drpy2", stats:{calls:0, errors:0, contexts:0}}
 };
+__routes["/v/__mitm__/api/chromium"] = {
+  ok:true, available:true, path:"/usr/bin/chromium",
+  installing:false, root:"/tmp/ms-playwright", log:""};
 __routes["/v/__mitm__/api/vip"] = {
   ok:true, vip_unlocked:true, vip_iqiyi:true, vip_migu:true,
   vip_migu_live:false, vip_mgtv:true,
@@ -208,6 +211,8 @@ ck(vl.indexOf(">AI<") >= 0 && vl.indexOf(">MI<") >= 0 && vl.indexOf(">MANG<") >=
 ck(vl.indexOf("登录态已导入") >= 0, "已配置的平台显示登录态状态");
 ck((E("vipState").textContent || "").indexOf("AI") >= 0,
    "VIP 开关状态显示当前启用的源");
+ck((E("chromiumBox").innerHTML || "").indexOf("已就绪") >= 0,
+   "Chromium 状态已显示");
 
 __out.join("\n");
 """

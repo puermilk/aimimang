@@ -31,6 +31,8 @@ import urllib.parse
 
 from difflib import SequenceMatcher
 
+from chromium_path import find_chromium
+
 import aiohttp
 
 try:                                  # 内置配置页（爱迷茫 · 在线源设置）
@@ -3449,6 +3451,65 @@ def vip_status_payload():
     }
 
 
+_CHROMIUM_INSTALL = {
+    "proc": None,
+    "log": os.path.join(DATA_DIR, "chromium_install.log"),
+    "started": 0.0,
+}
+
+
+def _chromium_root():
+    return os.path.join(DATA_DIR, "ms-playwright")
+
+
+def _chromium_log_tail(limit=4000):
+    try:
+        with open(_CHROMIUM_INSTALL["log"], "rb") as fh:
+            data = fh.read()
+        return data[-limit:].decode("utf-8", "replace")
+    except Exception:
+        return ""
+
+
+def _chromium_status():
+    path = find_chromium(_chromium_root())
+    proc = _CHROMIUM_INSTALL.get("proc")
+    installing = bool(proc is not None and proc.poll() is None)
+    return {
+        "available": bool(path),
+        "path": path,
+        "installing": installing,
+        "root": _chromium_root(),
+        "log": _chromium_log_tail(),
+    }
+
+
+def _start_chromium_install():
+    """配置页显式触发：下载 Playwright Chromium，不静默执行。"""
+    path = find_chromium(_chromium_root())
+    if path:
+        return False, "Chromium 已就绪：%s" % path
+    proc = _CHROMIUM_INSTALL.get("proc")
+    if proc is not None and proc.poll() is None:
+        return True, "Chromium 正在安装，请稍候…"
+    try:
+        os.makedirs(DATA_DIR, exist_ok=True)
+        env = os.environ.copy()
+        lib = os.path.join(os.path.dirname(os.path.abspath(__file__)), "lib")
+        env["PYTHONPATH"] = lib + (
+            ":" + env["PYTHONPATH"] if env.get("PYTHONPATH") else "")
+        env["PLAYWRIGHT_BROWSERS_PATH"] = _chromium_root()
+        with open(_CHROMIUM_INSTALL["log"], "wb") as log:
+            proc = subprocess.Popen(
+                [sys.executable, "-m", "playwright", "install", "chromium"],
+                stdout=log, stderr=subprocess.STDOUT, env=env,
+                start_new_session=True)
+        _CHROMIUM_INSTALL.update({"proc": proc, "started": time.time()})
+        return True, "已开始安装 Chromium（约 150MB），下载完成后自动检测。"
+    except Exception as e:
+        return False, "启动安装失败：%s" % repr(e)[:140]
+
+
 _VIP_LOGIN = None
 
 
@@ -5310,6 +5371,14 @@ async def handle_request(reader, writer, head, headers, body):
                                         "vip_health": await vip_health_payload(),
                                         "keepalive": vip_keepalive_status(),
                                         **vip_status_payload()},
+                                       extra=ensure_cookie(headers)))
+        elif path == "/v/__mitm__/api/chromium":
+            writer.write(json_response({"ok": True, **_chromium_status()},
+                                       extra=ensure_cookie(headers)))
+        elif path == "/v/__mitm__/api/chromium/install" and method == "POST":
+            ok, msg = _start_chromium_install()
+            writer.write(json_response({"ok": ok, "msg": msg,
+                                        **_chromium_status()},
                                        extra=ensure_cookie(headers)))
         elif path == "/v/__mitm__/api/config":
             writer.write(json_response({"ok": True, "config": public_config(),

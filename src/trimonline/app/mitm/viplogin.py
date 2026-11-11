@@ -24,8 +24,8 @@ except Exception as e:                       # 没装 Playwright 时给配置页
 
 UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
       "(KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36")
-CHROMIUM = os.environ.get("AIMIMANG_CHROMIUM") or (
-    "/usr/bin/chromium" if os.path.exists("/usr/bin/chromium") else "")
+from chromium_path import find_chromium
+
 DATA_DIR = os.environ.get("AIMIMANG_DATA", "/usr/local/trim_media_mitm/vip_data")
 LOG_FILE = os.path.join(DATA_DIR, "login.log")
 
@@ -366,7 +366,8 @@ class LoginSession:
         self.phone = str(phone or "").strip()
         self.state_path = state_path
         self.save_state = save_state
-        self.chromium = chromium or CHROMIUM
+        # 每次新建登录会话时重新解析：配置页刚装完 Chromium 也能直接用。
+        self.chromium = chromium or find_chromium()
         self.lock = threading.Lock()
         self.cmds = queue.Queue()
         self.stop_event = threading.Event()

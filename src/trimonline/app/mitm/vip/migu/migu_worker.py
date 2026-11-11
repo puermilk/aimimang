@@ -26,8 +26,9 @@ def page_is_offline(html):
     return any(m in (html or "") for m in OFFLINE_MARKERS)
 
 
-CHROMIUM = os.environ.get("AIMIMANG_CHROMIUM") or (
-    "/usr/bin/chromium" if os.path.exists("/usr/bin/chromium") else "")
+from chromium_path import find_chromium
+
+CHROMIUM = find_chromium()
 
 
 async def run(cid, out, storage_state):

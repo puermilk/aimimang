@@ -13,7 +13,7 @@ Wants=trim_app_center.service
 
 [Service]
 Type=simple
-Environment=PYTHONPATH=$DIR/lib
+Environment=PYTHONPATH=$DIR:$DIR/lib
 ExecStartPre=$DIR/ensure_takeover.sh
 ExecStart=/usr/bin/python3 $DIR/mitm.py
 Restart=always
@@ -87,7 +87,7 @@ Wants=trim-media-mitm.service
 Type=simple
 Environment=AIMIMANG_CONF=$DIR/conf
 Environment=AIMIMANG_DATA=$DIR/vip_data
-Environment=PYTHONPATH=$DIR/lib
+Environment=PYTHONPATH=$DIR:$DIR/lib
 Environment=PLAYWRIGHT_BROWSERS_PATH=/usr/local/trim_media_mitm/vip_data/ms-playwright
 Environment=AIMIMANG_CHROMIUM=/usr/bin/chromium
 WorkingDirectory=$DIR/vip/$name
@@ -110,7 +110,7 @@ Wants=network-online.target
 Type=oneshot
 Environment=AIMIMANG_CONF=$DIR/conf
 Environment=AIMIMANG_DATA=$DIR/vip_data
-Environment=PYTHONPATH=$DIR/lib
+Environment=PYTHONPATH=$DIR:$DIR/lib
 Environment=PLAYWRIGHT_BROWSERS_PATH=$DIR/vip_data/ms-playwright
 Environment=AIMIMANG_CHROMIUM=/usr/bin/chromium
 WorkingDirectory=$DIR

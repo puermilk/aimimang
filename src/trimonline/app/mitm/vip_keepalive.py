@@ -24,8 +24,9 @@ UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
 CONF_DIR = os.environ.get("AIMIMANG_CONF", "/usr/local/trim_media_mitm/conf")
 DATA_DIR = os.environ.get("AIMIMANG_DATA", "/usr/local/trim_media_mitm/vip_data")
 STATUS = os.path.join(DATA_DIR, "keepalive.json")
-CHROMIUM = os.environ.get("AIMIMANG_CHROMIUM") or (
-    "/usr/bin/chromium" if os.path.exists("/usr/bin/chromium") else "")
+from chromium_path import find_chromium
+
+CHROMIUM = find_chromium()
 
 PLATFORMS = {
     "iqiyi": {

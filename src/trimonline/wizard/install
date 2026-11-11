@@ -24,5 +24,14 @@
         ]
       }
     ]
+  },
+  {
+    "stepTitle": "Chromium 浏览器（MI / MANG）",
+    "items": [
+      {
+        "type": "tips",
+        "helpText": "MI / MANG 的扫码、短信登录和取 m3u8 需要 Chromium。\n\n安装程序会检测 NAS 是否已有 /usr/bin/chromium；如果没有，安装完成后打开配置页，点「安装 Chromium（约 150MB）」即可。不会静默下载。\n\nAI 源和 MI 直播不依赖 Chromium。"
+      }
+    ]
   }
 ]
