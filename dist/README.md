@@ -6,17 +6,17 @@
 
 ## 最新版
 
-**`爱迷茫-2.0.1.fpk`**（2026-11-11 · 正式版）
+**`爱迷茫-2.0.2.fpk`**（2026-11-25 · 正式版）
 
 - 大小：59 MB（含 Playwright Python 驱动、Pillow 与 pillow.libs，浏览器用 NAS 自带 chromium）
-- SHA-256：`e09555d35e9824dce25387383275c8253512af8eb42a27248aa80d4fd8fee7bf`
+- SHA-256：`1821012118ad0724710f800de9fdbc05b1326a2b8e2ce43ead1deca627b5f5ff`
 
 下载后建议先校验：
 
 ```bash
-sha256sum -c 爱迷茫-2.0.1.fpk.sha256
+sha256sum -c 爱迷茫-2.0.2.fpk.sha256
 # 或者
-sha256sum 爱迷茫-2.0.1.fpk
+sha256sum 爱迷茫-2.0.2.fpk
 ```
 
 ## 全部版本
@@ -36,6 +36,7 @@ sha256sum 爱迷茫-2.0.1.fpk
 | `爱迷茫-1.3.0.fpk` | 5.5M | `d4a108d62df120d2b72eaa38f453681d8a0a1efe6089dfc037904a3c16515437` |
 | `爱迷茫-2.0.0.fpk` | 59M | `9fc7f07543f90a67a8fd17ce597c2a4d8fcf8a28cc945948d38b41cc5f639765` |
 | `爱迷茫-2.0.1.fpk` | 59M | `e09555d35e9824dce25387383275c8253512af8eb42a27248aa80d4fd8fee7bf` |
+| `爱迷茫-2.0.2.fpk` | 59M | `1821012118ad0724710f800de9fdbc05b1326a2b8e2ce43ead1deca627b5f5ff` |
 
 完整的校验清单见 [`SHA256SUMS.txt`](SHA256SUMS.txt)，可一次性校验：
 
@@ -50,7 +51,7 @@ sha256sum -c SHA256SUMS.txt
 **方式二（首次安装）**：
 
 ```bash
-sudo appcenter-cli install-fpk /vol1/1000/MUSCI/爱迷茫-2.0.1.fpk
+sudo appcenter-cli install-fpk /vol1/1000/MUSCI/爱迷茫-2.0.2.fpk
 ```
 
 > 部分 fnOS 版本的 `appcenter-cli` 升级时只暂存 FPK、不执行 upgrade 回调；
@@ -65,6 +66,7 @@ sudo appcenter-cli install-fpk /vol1/1000/MUSCI/爱迷茫-2.0.1.fpk
 
 每个版本的改动见仓库根目录的 `x.y.z-更新说明.md`：
 
+- [`2.0.2-更新说明.md`](../2.0.2-更新说明.md)
 - [`2.0.1-更新说明.md`](../2.0.1-更新说明.md)（最新 · 正式版）
 - [`2.0.0-更新说明.md`](../2.0.0-更新说明.md)
 - [`1.3.0-更新说明.md`](../1.3.0-更新说明.md)
