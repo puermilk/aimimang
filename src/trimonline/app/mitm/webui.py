@@ -555,7 +555,7 @@ pre{background:#0d1117;border:1px solid var(--line);border-radius:8px;
 <body><div class="wrap">
 
 <h1>爱迷茫</h1>
-<div class="sub">飞牛影视在线源插件 · <b style="color:var(--ok)">2.0.1 正式版</b> · 源设置（<span class="mono" id="file">conf/sources.json</span>）<br>
+<div class="sub">飞牛影视在线源插件 · <b style="color:var(--ok)">2.0.2 正式版</b> · 源设置（<span class="mono" id="file">conf/sources.json</span>）<br>
   VIP 源 在下方，需先输入暗号开启。</div>
 
 <div class="note"><b>声明</b>：本插件只是一个「播放器侧」的中转工具，不含任何影视内容，
@@ -704,11 +704,35 @@ pre{background:#0d1117;border:1px solid var(--line);border-radius:8px;
     <select id="visMode" style="width:220px">
       <option value="admin">仅管理员（默认）</option>
       <option value="all">所有用户</option>
-      <option value="users">指定用户</option>
+      <option value="users">模式一 · 指定开放用户（全部源）</option>
+      <option value="per_source">模式二 · 按源指定用户</option>
     </select>
     <span class="tag dim" id="visTag">读取中…</span>
   </div>
-  <div id="userBox" style="display:none;margin-top:10px"></div>
+  <div id="userBox" style="display:none;margin-top:14px;border-top:1px dashed var(--line);padding-top:12px">
+    <div style="font-weight:600;font-size:14px;margin-bottom:6px">模式一：指定开放用户（全部在线源）</div>
+    <div class="sub" style="font-size:12.5px;margin-bottom:10px">
+      勾选的用户能看到<b>全部在线源</b>；此模式下每个源单独指定的设置全部忽略。
+    </div>
+    <div id="userList"></div>
+    <div class="row" style="margin-top:12px">
+      <button id="btnVisSave">保存模式一（立即生效）</button>
+      <span id="visSaved" class="sub" style="font-size:12.5px"></span>
+    </div>
+  </div>
+
+  <div id="perSourceBox" style="display:none;margin-top:14px;border-top:1px dashed var(--line);padding-top:12px">
+    <div style="font-weight:600;font-size:14px;margin-bottom:6px">模式二：按源指定用户（每个源独立）</div>
+    <div class="sub" style="font-size:12.5px;margin-bottom:10px">
+      每个源单独勾选可见用户：<b>普通用户只看勾了自己的源，没勾的源看不到</b>；<b>管理员始终看全部源</b>。
+      此模式下上面的「指定开放用户」名单忽略。直接用飞牛账号勾选，不用手打用户名。
+    </div>
+    <div id="perSourceList"></div>
+    <div class="row" style="margin-top:12px">
+      <button id="btnPerUserSave2">保存模式二（立即生效）</button>
+      <span id="perUserSaved2" class="sub" style="font-size:12.5px"></span>
+    </div>
+  </div>
   <div id="visMsg" class="sub" style="margin:8px 0 0;font-size:12px"></div>
 </div>
 
@@ -1103,25 +1127,124 @@ function renderVis(){
            names.indexOf(String(u.guid).toLowerCase()) >= 0;
   }).length;
   if (tag){
-    tag.className = "tag " + (S.VIS === "all" ? "warn" : (S.VIS === "users" ? "ok" : "dim"));
+    tag.className = "tag " + (S.VIS === "all" ? "warn" : (S.VIS === "users" || S.VIS === "per_source" ? "ok" : "dim"));
     tag.textContent = S.VIS === "all" ? "所有账号可见"
-                    : (S.VIS === "users" ? ("已选 " + n + " 个账号") : "仅管理员");
+                    : (S.VIS === "users" ? ("模式一 · 已选 " + n + " 个账号")
+                    : (S.VIS === "per_source" ? "模式二 · 按源指定" : "仅管理员"));
   }
   if (box) box.style.display = (S.VIS === "users") ? "" : "none";
+  var box2 = document.getElementById("perSourceBox");
+  if (box2) box2.style.display = (S.VIS === "per_source") ? "" : "none";
   if (msg){
     if (S.VIS === "all"){
       msg.textContent = "注意：所有飞牛影视账号（包括访客/儿童账号）都会看到在线搜索和在线继续播放。";
     } else if (S.VIS === "users"){
-      msg.textContent = "管理员始终可见；下面勾选的账号也会看到。未勾选的账号只看到本地媒体库。";
+      msg.textContent = "模式一：勾选的用户可看全部在线源；源级单独指定被忽略。";
+    } else if (S.VIS === "per_source"){
+      msg.textContent = "模式二：普通用户只看勾了自己的源（没勾看不到）；管理员看全部源。";
     } else {
       msg.textContent = "只有管理员账号能看到在线源；其他账号只看到本地媒体库和本地播放记录。";
     }
   }
   if (S.VIS === "users") renderUsers();
+  if (S.VIS === "per_source") renderPerSource();
+}
+
+function srcUsersOf(s){
+  return (s.users||[]).map(function(x){return String(x).toLowerCase();});
+}
+function saveVis(){
+  var el = document.getElementById("visSaved");
+  if (el){ el.style.color="var(--dim)"; el.textContent="保存中…"; }
+  api("/v/__mitm__/api/config", {online_visibility:S.VIS, online_users:S.ALLOW || []})
+    .then(function(d){
+      if (d.online_visibility) S.VIS = d.online_visibility;
+      if (d.online_users) S.ALLOW = d.online_users.slice();
+      if (d.users) S.USERS = d.users.slice();
+      renderVis();
+      var e2 = document.getElementById("visSaved");
+      if (e2){
+        e2.style.color = d.ok ? "var(--ok)" : "var(--warn)";
+        e2.textContent = d.ok ? ("✅ 已保存并生效") : ("❌ 失败："+(d.msg||""));
+      }
+    })
+    .catch(function(e){
+      var e3 = document.getElementById("visSaved");
+      if (e3){ e3.style.color="var(--warn)"; e3.textContent="❌ "+(e&&e.message||e); }
+    });
+}
+
+function savePerUser2(){
+  var el = document.getElementById("perUserSaved2");
+  if (el){ el.style.color="var(--dim)"; el.textContent="保存中…"; }
+  api("/v/__mitm__/api/sources", {primary:S.primary, fallback:S.fallback, js:S.js,
+       online_visibility:S.VIS, online_users:S.ALLOW,
+       source_mode:S.MODE, source_limit:S.LIMIT, js_source_limit:S.JLIMIT})
+    .then(function(d){
+      if (d.primary) S.primary = d.primary.slice();
+      if (d.fallback) S.fallback = d.fallback.slice();
+      if (d.js) S.js = d.js.slice();
+      if (d.online_visibility) S.VIS = d.online_visibility;
+      if (d.online_users) S.ALLOW = d.online_users.slice();
+      if (d.users) S.USERS = d.users.slice();
+      renderPerSource();
+      var e2 = document.getElementById("perUserSaved2");
+      if (e2){ e2.style.color = d.ok ? "var(--ok)" : "var(--warn)";
+               e2.textContent = d.ok ? "✅ 已保存并生效" : "❌ 失败："+(d.msg||""); }
+    })
+    .catch(function(e){
+      var e3 = document.getElementById("perUserSaved2");
+      if (e3){ e3.style.color="var(--warn)"; e3.textContent="❌ "+(e&&e.message||e); }
+    });
+}
+
+function renderPerSource(){
+  var box = document.getElementById("perSourceList");
+  if (!box) return;
+  var users = S.USERS || [];
+  if (!users.length){
+    box.innerHTML = '<div style="color:var(--warn);font-size:12.5px">没读到飞牛账号，无法按用户指定。</div>';
+    return;
+  }
+  var all = (S.primary||[]).map(function(s){return {s:s,lv:"primary"};})
+            .concat((S.fallback||[]).map(function(s){return {s:s,lv:"fallback"};}));
+  if (!all.length){ box.innerHTML = '<div class="sub">还没有配置在线源。</div>'; return; }
+  var h = '<div style="display:grid;grid-template-columns:140px 1fr;gap:10px 12px;align-items:start">';
+  all.forEach(function(o, idx){
+    h += '<div style="font-size:13px;padding-top:2px">'+esc(o.s.name||o.s.api||'?')+'</div>' +
+         '<div class="row" style="gap:10px;flex-wrap:wrap">';
+    users.forEach(function(u){
+      if (u.is_admin) return;   // 管理员始终可见，不必列
+      var key = String(u.username||"").toLowerCase();
+      var guidKey = String(u.guid||"").toLowerCase();
+      var checked = srcUsersOf(o.s).indexOf(key)>=0 || srcUsersOf(o.s).indexOf(guidKey)>=0;
+      h += '<label style="display:flex;align-items:center;gap:4px;font-size:12.5px">' +
+           '<input type="checkbox" '+(checked?"checked":"")+
+           ' onchange="toggleSrcUser('+idx+','+users.indexOf(u)+',this.checked)">' +
+           esc(u.username)+'</label>';
+    });
+    h += '</div>';
+  });
+  h += '</div>';
+  box.innerHTML = h;
+}
+function toggleSrcUser(srcIdx, userIdx, checked){
+  var srcs = (S.primary||[]).map(function(s){return {s:s,lv:"primary"};})
+             .concat((S.fallback||[]).map(function(s){return {s:s,lv:"fallback"};}));
+  var o = srcs[srcIdx];
+  var u = (S.USERS||[])[userIdx];
+  if (!o || !u) return;
+  var key = String(u.username||"");
+  var arr = (o.s.users||[]).filter(function(x){
+    var k=String(x).toLowerCase();
+    return k!==key.toLowerCase() && k!==String(u.guid||"").toLowerCase();
+  });
+  if (checked) arr.push(key);
+  o.s.users = arr;
 }
 
 function renderUsers(){
-  var box = document.getElementById("userBox");
+  var box = document.getElementById("userList");
   if (!box) return;
   var users = S.USERS || [];
   if (!users.length){
@@ -1362,6 +1485,12 @@ function blankJs(){ return {name:"", js:"", referer:"", lines:"auto"}; }
 document.getElementById("visMode").onchange = function(){
   S.VIS = this.value;
   renderVis();
+  var m = document.getElementById("visMsg");
+  if (m && (S.VIS === "users" || S.VIS === "per_source")){
+    m.style.color = "var(--warn)";
+    m.textContent = "已切换到「" + (S.VIS === "users" ? "模式一" : "模式二") +
+                    "」，尚未保存 —— 请点下方「保存并测速」才生效。";
+  }
 };
 
 document.getElementById("srcMode").onchange = function(){
@@ -1440,6 +1569,9 @@ document.getElementById("btnAllowAny").onclick = function(){
   }).catch(function(e){ log("切换失败：" + e.message); })
     .then(function(){ btn.disabled = false; });
 };
+
+document.getElementById("btnVisSave").onclick = function(){ saveVis(); };
+document.getElementById("btnPerUserSave2").onclick = function(){ savePerUser2(); };
 
 document.getElementById("btnSave").onclick = function(){
   var btn = this; btn.disabled = true; log("保存中…");

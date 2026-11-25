@@ -185,9 +185,13 @@ def _norm_sources(obj):
                 site_timeout = 0
             if not (1 <= site_timeout <= 30):
                 site_timeout = 0
+            users = it.get("users") or []
+            if isinstance(users, str):
+                users = [users]
+            users = [str(x).strip().lower() for x in users if str(x).strip()]
             norm.append({"name": name, "api": api, "referer": ref,
                          "lines": lines, "kind": "cms",
-                         "timeout": site_timeout})
+                         "timeout": site_timeout, "users": users})
         out.append(norm)
 
     # ---- JS（drpy）源：js 可以是网址，也可以是 `**`base64 或直接贴的规则文本 ----
@@ -224,8 +228,12 @@ def _norm_sources(obj):
         ref = str(it.get("referer") or "").strip()
         if not ref and ok_url:
             ref = "https://" + js.split("//", 1)[-1].split("/", 1)[0] + "/"
+        jusers = it.get("users") or []
+        if isinstance(jusers, str):
+            jusers = [jusers]
+        jusers = [str(x).strip().lower() for x in jusers if str(x).strip()]
         jnorm.append({"name": name, "js": js, "referer": ref,
-                      "lines": lines, "kind": "js"})
+                      "lines": lines, "kind": "js", "users": jusers})
     out.append(jnorm)
     return out[0], out[1], out[2]
 
@@ -939,10 +947,11 @@ async def js_query(site, kw, limit=0):
     return out
 
 
-async def js_search_all(kw, cap=0, timeout=12.0):
+async def js_search_all(kw, cap=0, timeout=12.0, user=None):
     """并行查所有 JS 源（cap<=0 表示不限），整体超时保护。
     注意：超时只是「不等了」，被丢下的线程还会把这次请求跑完，属正常现象。"""
-    sites = [s for s in JS_SITES if s.get("kind") == "js"]
+    sites = [s for s in JS_SITES
+             if s.get("kind") == "js" and source_user_ok(s, user)]
     if cap and cap > 0:
         sites = sites[:cap]
     if not sites or jsspider is None:
@@ -1089,21 +1098,21 @@ def _vip_first_sort(items):
     return items
 
 
-async def online_search(kw, _allow_fallback=True):
+async def online_search(kw, user=None, _allow_fallback=True):
     if not kw:
         return []
     qkw = _search_query(kw)
     alt_kw = _fallback_query(qkw)
     h_alias_kw = _hgdj_alias_query(qkw)
     cms_kw = h_alias_kw or qkw
-    cache_key = qkw.lower() or qkw
+    cache_key = (qkw.lower() or qkw) + "|" + _visible_scope_fp(user)
     if _allow_fallback:
         hit = _cache_get(cache_key, max_age=_SEARCH_TTL)
         if hit:
             log(f"online search '{kw}' -> {len(hit)} 条（缓存补全，慢源已陆续到齐）")
             return _vip_first_sort(hit)
     sem = asyncio.Semaphore(4)
-    mode, p_sites, f_sites, js_limit = cms_plan()
+    mode, p_sites, f_sites, js_limit = cms_plan(user)
     levels = [p_sites + f_sites] if mode == "parallel" else [p_sites, f_sites]
 
     async def cms_all():
@@ -1163,8 +1172,8 @@ async def online_search(kw, _allow_fallback=True):
 
     hgdj_task = asyncio.ensure_future(hgdj_search())
     cms_task = asyncio.ensure_future(cms_all())
-    js_task = (asyncio.ensure_future(js_search_all(qkw, cap=js_limit))
-               if JS_SITES else None)
+    js_task = (asyncio.ensure_future(js_search_all(qkw, cap=js_limit, user=user))
+               if any(source_user_ok(s, user) for s in JS_SITES) else None)
     cms_items = await cms_task
 
     js_items = []
@@ -1212,7 +1221,7 @@ async def online_search(kw, _allow_fallback=True):
             f" / HGDJ {len(hgdj_items)}）")
     elif _allow_fallback and alt_kw:
         log(f"online search '{kw}' 无结果，回退搜 '{alt_kw}'")
-        return await online_search(alt_kw, _allow_fallback=False)
+        return await online_search(alt_kw, user=user, _allow_fallback=False)
     return items
 
 
@@ -2626,7 +2635,8 @@ def synth_play(guid, ep_index=0, headers=None):
     if hgdj_is_rec(_rec):
         return hgdj_synth_play(guid, _rec, headers)
     try:
-        _lines = len(build_line_index(guid, _rec, ep_index))
+        _lines = len(build_line_index(
+            guid, _rec, ep_index, request_user(headers) if headers else None))
     except Exception:
         _lines = 1
     sub = _sub_for(_rec, guid, ep_index)
@@ -2876,9 +2886,11 @@ _CONFIG_NOTE = [
     "first_trusted   : 上面那次自动信任用掉没有（留档，可改）",
     "默认就放行的：内网私网段、IPv6 内网段(ULA/链路本地)、叠加网(100.64/10)、本机 unix socket",
     "",
-    "online_visibility: 在线源（搜索结果 / 豆瓣伪库 / 在线继续播放）对谁可见：",
-    "                   all=所有用户，admin=仅管理员（默认），users=仅 online_users 里的用户",
-    "online_users     : online_visibility=users 时生效，填飞牛影视用户名，大小写不敏感",
+    "online_visibility: 在线源可见模式（二选一）：",
+    "                   users     = 模式一「指定开放用户」：全部源对这些用户开放（源级设置忽略）",
+    "                   per_source= 模式二「按源指定用户」：管理员看全部源；普通用户只看勾了自己的源",
+    "                   all=所有用户，admin=仅管理员（默认）",
+    "online_users     : 模式一(users)时生效；模式二(per_source)忽略此项",
     "",
     "source_mode      : 采集源查询方式：priority=主用优先（旧行为，主用落空才查兜底），",
     "                   parallel=全部同时（主用+兜底一起查，所有启用的源都生效）",
@@ -3119,7 +3131,7 @@ def online_policy():
         return _POLICY_CACHE["vis"], _POLICY_CACHE["users"]
     cfg = load_config()
     vis = str(cfg.get("online_visibility") or "admin").strip().lower()
-    if vis not in ("all", "admin", "users"):
+    if vis not in ("all", "admin", "users", "per_source"):
         vis = "admin"
     raw = cfg.get("online_users") or []
     if not isinstance(raw, list):
@@ -3127,6 +3139,94 @@ def online_policy():
     users = {str(x).strip().lower() for x in raw if str(x).strip()}
     _POLICY_CACHE.update({"ts": now, "vis": vis, "users": users})
     return vis, users
+
+
+def _user_in_global_allow(user):
+    """用户是否在全局在线可见范围内。all 模式 / 管理员一律视为在范围内。"""
+    if not user:
+        return False
+    vis, allowed = online_policy()
+    if vis == "all" or user.get("is_admin"):
+        return True
+    if vis in ("admin", "per_source"):
+        return False
+    name = str(user.get("username") or "").strip().lower()
+    guid = str(user.get("guid") or "").strip().lower()
+    return bool((name and name in allowed) or (guid and guid in allowed))
+
+
+def _user_listed_in_sources(user):
+    """用户是否被任一源的 users 显式列出（源级授权，可突破全局限制）。"""
+    if not user:
+        return False
+    name = str(user.get("username") or "").strip().lower()
+    guid = str(user.get("guid") or "").strip().lower()
+    for s in (list(CMS_PRIMARY) + list(CMS_FALLBACK) + list(JS_SITES)):
+        for x in (s.get("users") or []):
+            x = str(x).strip().lower()
+            if x and ((name and name == x) or (guid and guid == x)):
+                return True
+    return False
+
+
+def source_user_ok(site, user):
+    """单个源是否对该用户生效。两种模式互斥，由 online_visibility 决定：
+      模式一 users      → 忽略源级 users，全部源对全局名单用户开放；
+      模式二 per_source → 管理员看全部源；普通用户只看勾了自己的源。
+    all/admin 保持原行为。"""
+    vis, _ = online_policy()
+    if vis == "per_source":
+        # 模式二：管理员看全部源；普通用户只看勾了自己的源，没勾的一律看不到。
+        # 未登录一律看不到。
+        if not user:
+            return False
+        if user.get("is_admin"):
+            return True
+        allowed = (site.get("users") or []) if isinstance(site, dict) else []
+        if not allowed:
+            return False
+        name = str(user.get("username") or "").strip().lower()
+        guid = str(user.get("guid") or "").strip().lower()
+        for x in allowed:
+            x = str(x).strip().lower()
+            if x and ((name and name == x) or (guid and guid == x)):
+                return True
+        return False
+    if vis == "users":
+        # 模式一：源级设置完全忽略，全部源对全局名单用户开放
+        return _user_in_global_allow(user)
+    # all / admin：源级设置也忽略，走全局
+    return _user_in_global_allow(user)
+
+
+def _visible_scope_fp(user):
+    """当前用户可见源集合的指纹。没有任何受限源时所有用户指纹相同，
+    搜索缓存照旧共享；有受限源时按用户隔离，避免 A 的结果被 B 命中。"""
+    names = [s.get("name") or "" for s in (list(CMS_PRIMARY) + list(CMS_FALLBACK)
+                                           + list(JS_SITES))
+             if source_user_ok(s, user)]
+    return hashlib.md5("|".join(sorted(names)).encode("utf-8")).hexdigest()[:10]
+
+
+def _site_cfg(name):
+    """按站点名 / 显示名找源配置；找不到视为不受限（返回 None）。"""
+    if not name:
+        return None
+    n = str(name).strip().lower()
+    for s in (list(CMS_SITES) + list(JS_SITES) + vip_sites()):
+        if str(s.get("name") or "").strip().lower() == n:
+            return s
+        if str(s.get("display") or "").strip().lower() == n:
+            return s
+    return None
+
+
+def _site_user_ok(name, user):
+    """某条线路归属的站点是否对该用户生效（未知来源一律放行）。"""
+    site = _site_cfg(name)
+    if site is None:
+        return True                     # 未知来源（含去重合并的地址）放行
+    return source_user_ok(site, user)
 
 
 def online_allowed(user):
@@ -3138,6 +3238,8 @@ def online_allowed(user):
         return False
     if vis == "admin":
         return bool(user.get("is_admin"))
+    if vis == "per_source":
+        return bool(user.get("is_admin")) or _user_listed_in_sources(user)
     if user.get("is_admin"):
         return True
     name = str(user.get("username") or "").strip().lower()
@@ -3174,14 +3276,14 @@ def source_policy():
     return mode, limit, js_limit
 
 
-def cms_plan():
+def cms_plan(user=None):
     """按配置把主用/兜底整理成本次真正启用的两级源。
     返回 (mode, primary, fallback, js_limit)。
     source_limit 按「主用在前、兜底在后」截断；0 表示不限。
     VIP 源（爱奇艺/咪咕）单独追加，不占用 source_limit 名额。"""
     mode, limit, js_limit = source_policy()
-    p = list(CMS_PRIMARY)
-    f = list(CMS_FALLBACK)
+    p = [s for s in CMS_PRIMARY if source_user_ok(s, user)]
+    f = [s for s in CMS_FALLBACK if source_user_ok(s, user)]
     if limit > 0:
         p = p[:limit]
         f = f[:max(0, limit - len(p))]
@@ -4954,7 +5056,7 @@ async def _run_maintenance(reason):
         save_registry(force=True)
 
 
-def _alt_sources(guid, rec):
+def _alt_sources(guid, rec, user=None):
     """同片的其它候选源：同分类、同标题、不同 guid 的条目
     （采集站同一部剧常有多个片源条目，互为备份）。
     返回 {guid: [该条目每集的url...]}，按集数优先匹配。"""
@@ -4968,6 +5070,8 @@ def _alt_sources(guid, rec):
             continue
         if (r.get("title") or "").strip() != title:
             continue
+        if not _site_user_ok(r.get("source") or r.get("site") or "", user):
+            continue
         eps = r.get("eps") or []
         if not eps:
             continue
@@ -4976,7 +5080,7 @@ def _alt_sources(guid, rec):
     return [(g, e) for _d, g, e in out]
 
 
-def build_line_index(guid, rec, ep_index):
+def build_line_index(guid, rec, ep_index, user=None):
     """构造该集的候选源列表（多源合并），供换源使用。
     返回 [(来源说明, 该集url), ...]"""
     eps = rec.get("eps") or []
@@ -4988,13 +5092,24 @@ def build_line_index(guid, rec, ep_index):
     if good:
         cands.append(("上次可用", good))
     e = eps[ep_index]
+    alt_meta = e.get("alt") or []
+    def _url_site(i):
+        # urls[0] 是主线路（归属 rec 的 source）；后续按 alt 里的站点归属
+        if i == 0:
+            return rec.get("source") or rec.get("site") or ""
+        if 0 <= i - 1 < len(alt_meta):
+            return alt_meta[i - 1].get("site") or ""
+        return ""                       # 去重合并进来的地址：来源未知，放行
     for i, u in enumerate(e.get("urls") or []):
+        if not _site_user_ok(_url_site(i), user):
+            continue
         if u not in [c[1] for c in cands]:
             cands.append((f"线路{i+1}" if i else "主线路", u))
     if e.get("url") and e["url"] not in [c[1] for c in cands]:
-        cands.append(("主线路", e["url"]))
+        if _site_user_ok(rec.get("source") or rec.get("site") or "", user):
+            cands.append(("主线路", e["url"]))
     # 同片其它源
-    for g2, eps2 in _alt_sources(guid, rec):
+    for g2, eps2 in _alt_sources(guid, rec, user):
         if ep_index < len(eps2):
             u2 = eps2[ep_index].get("url")
             if u2 and u2 not in [c[1] for c in cands]:
@@ -5003,10 +5118,10 @@ def build_line_index(guid, rec, ep_index):
     return cands
 
 
-def play_candidates(rec, ep_index, line=None, guid=None):
+def play_candidates(rec, ep_index, line=None, guid=None, user=None):
     """某集的候选播放地址：缓存的可用地址优先，然后各线路同集地址，
     最后是同片的其它源（换源）。line=N 可指定用第 N 个候选。"""
-    cands = build_line_index(guid, rec, ep_index)
+    cands = build_line_index(guid, rec, ep_index, user)
     urls = [u for _lbl, u in cands]
     if line is not None and 0 <= line < len(urls):
         return [urls[line]] + [u for i, u in enumerate(urls) if i != line]
@@ -5029,7 +5144,8 @@ async def serve_manifest(guid, ep_index, headers, writer, line=None):
         return
     await ensure_resolved(guid)
     rec = registry.get(guid) or {}
-    cands = play_candidates(rec, ep_index, line, guid)
+    cands = play_candidates(rec, ep_index, line, guid,
+                            request_user(headers))
     if not cands:
         log("no candidates for", guid, rec.get("title"))
         await write_head(writer, 404, {"Content-Length": 0, "Connection": "close"})
@@ -5208,7 +5324,7 @@ async def handle_request(reader, writer, head, headers, body):
             patch = {}
             if "online_visibility" in req:
                 vis = str(req.get("online_visibility") or "").strip().lower()
-                if vis in ("all", "admin", "users"):
+                if vis in ("all", "admin", "users", "per_source"):
                     patch["online_visibility"] = vis
                 else:
                     ok = False
@@ -5275,7 +5391,7 @@ async def handle_request(reader, writer, head, headers, body):
                 patch["write_allow_ip"] = v if isinstance(v, list) else [v]
             if "online_visibility" in req:
                 vis = str(req.get("online_visibility") or "").strip().lower()
-                if vis in ("all", "admin", "users"):
+                if vis in ("all", "admin", "users", "per_source"):
                     patch["online_visibility"] = vis
             if "online_users" in req:
                 v = req.get("online_users") or []
@@ -5473,7 +5589,7 @@ async def handle_request(reader, writer, head, headers, body):
         _pb = _public_base_of(headers)
         if _pb:
             _PUBLIC_BASE = _pb
-        online_t = asyncio.create_task(online_search(kw)) if kw else None
+        online_t = asyncio.create_task(online_search(kw, req_user)) if kw else None
         raw = await forward(head, headers, body)
         _, body_b = split_response(raw)
         local = None
