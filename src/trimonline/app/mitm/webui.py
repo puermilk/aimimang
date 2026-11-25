@@ -555,7 +555,7 @@ pre{background:#0d1117;border:1px solid var(--line);border-radius:8px;
 <body><div class="wrap">
 
 <h1>爱迷茫</h1>
-<div class="sub">飞牛影视在线源插件 · <b style="color:var(--ok)">2.0.1 正式版</b> · 源设置（<span class="mono" id="file">conf/sources.json</span>）<br>
+<div class="sub">飞牛影视在线源插件 · <b style="color:var(--ok)">2.0.2 正式版</b> · 源设置（<span class="mono" id="file">conf/sources.json</span>）<br>
   VIP 源 在下方，需先输入暗号开启。</div>
 
 <div class="note"><b>声明</b>：本插件只是一个「播放器侧」的中转工具，不含任何影视内容，
@@ -709,16 +709,29 @@ pre{background:#0d1117;border:1px solid var(--line);border-radius:8px;
     </select>
     <span class="tag dim" id="visTag">读取中…</span>
   </div>
-  <div id="userBox" style="display:none;margin-top:10px"></div>
+  <div id="userBox" style="display:none;margin-top:14px;border-top:1px dashed var(--line);padding-top:12px">
+    <div style="font-weight:600;font-size:14px;margin-bottom:6px">模式一：指定开放用户（全部在线源）</div>
+    <div class="sub" style="font-size:12.5px;margin-bottom:10px">
+      勾选的用户能看到<b>全部在线源</b>；此模式下每个源单独指定的设置全部忽略。
+    </div>
+    <div id="userList"></div>
+    <div class="row" style="margin-top:12px">
+      <button id="btnVisSave">保存模式一（立即生效）</button>
+      <span id="visSaved" class="sub" style="font-size:12.5px"></span>
+    </div>
+  </div>
 
   <div id="perSourceBox" style="display:none;margin-top:14px;border-top:1px dashed var(--line);padding-top:12px">
     <div style="font-weight:600;font-size:14px;margin-bottom:6px">模式二：按源指定用户（每个源独立）</div>
     <div class="sub" style="font-size:12.5px;margin-bottom:10px">
       每个源单独勾选可见用户：<b>普通用户只看勾了自己的源，没勾的源看不到</b>；<b>管理员始终看全部源</b>。
       此模式下上面的「指定开放用户」名单忽略。直接用飞牛账号勾选，不用手打用户名。
-      勾选后点页面下方「保存并测速」生效。
     </div>
     <div id="perSourceList"></div>
+    <div class="row" style="margin-top:12px">
+      <button id="btnPerUserSave2">保存模式二（立即生效）</button>
+      <span id="perUserSaved2" class="sub" style="font-size:12.5px"></span>
+    </div>
   </div>
   <div id="visMsg" class="sub" style="margin:8px 0 0;font-size:12px"></div>
 </div>
@@ -1140,6 +1153,51 @@ function renderVis(){
 function srcUsersOf(s){
   return (s.users||[]).map(function(x){return String(x).toLowerCase();});
 }
+function saveVis(){
+  var el = document.getElementById("visSaved");
+  if (el){ el.style.color="var(--dim)"; el.textContent="保存中…"; }
+  api("/v/__mitm__/api/config", {online_visibility:S.VIS, online_users:S.ALLOW || []})
+    .then(function(d){
+      if (d.online_visibility) S.VIS = d.online_visibility;
+      if (d.online_users) S.ALLOW = d.online_users.slice();
+      if (d.users) S.USERS = d.users.slice();
+      renderVis();
+      var e2 = document.getElementById("visSaved");
+      if (e2){
+        e2.style.color = d.ok ? "var(--ok)" : "var(--warn)";
+        e2.textContent = d.ok ? ("✅ 已保存并生效") : ("❌ 失败："+(d.msg||""));
+      }
+    })
+    .catch(function(e){
+      var e3 = document.getElementById("visSaved");
+      if (e3){ e3.style.color="var(--warn)"; e3.textContent="❌ "+(e&&e.message||e); }
+    });
+}
+
+function savePerUser2(){
+  var el = document.getElementById("perUserSaved2");
+  if (el){ el.style.color="var(--dim)"; el.textContent="保存中…"; }
+  api("/v/__mitm__/api/sources", {primary:S.primary, fallback:S.fallback, js:S.js,
+       online_visibility:S.VIS, online_users:S.ALLOW,
+       source_mode:S.MODE, source_limit:S.LIMIT, js_source_limit:S.JLIMIT})
+    .then(function(d){
+      if (d.primary) S.primary = d.primary.slice();
+      if (d.fallback) S.fallback = d.fallback.slice();
+      if (d.js) S.js = d.js.slice();
+      if (d.online_visibility) S.VIS = d.online_visibility;
+      if (d.online_users) S.ALLOW = d.online_users.slice();
+      if (d.users) S.USERS = d.users.slice();
+      renderPerSource();
+      var e2 = document.getElementById("perUserSaved2");
+      if (e2){ e2.style.color = d.ok ? "var(--ok)" : "var(--warn)";
+               e2.textContent = d.ok ? "✅ 已保存并生效" : "❌ 失败："+(d.msg||""); }
+    })
+    .catch(function(e){
+      var e3 = document.getElementById("perUserSaved2");
+      if (e3){ e3.style.color="var(--warn)"; e3.textContent="❌ "+(e&&e.message||e); }
+    });
+}
+
 function renderPerSource(){
   var box = document.getElementById("perSourceList");
   if (!box) return;
@@ -1186,7 +1244,7 @@ function toggleSrcUser(srcIdx, userIdx, checked){
 }
 
 function renderUsers(){
-  var box = document.getElementById("userBox");
+  var box = document.getElementById("userList");
   if (!box) return;
   var users = S.USERS || [];
   if (!users.length){
@@ -1511,6 +1569,9 @@ document.getElementById("btnAllowAny").onclick = function(){
   }).catch(function(e){ log("切换失败：" + e.message); })
     .then(function(){ btn.disabled = false; });
 };
+
+document.getElementById("btnVisSave").onclick = function(){ saveVis(); };
+document.getElementById("btnPerUserSave2").onclick = function(){ savePerUser2(); };
 
 document.getElementById("btnSave").onclick = function(){
   var btn = this; btn.disabled = true; log("保存中…");
