@@ -243,8 +243,11 @@ class PageTest(unittest.TestCase):
         for needle in ("暗号", "开启 AI", "开启 MI", "开启 MANG",
                        "看直播电视", "VIP 在线源接进来", "已识别登录",
                        "建议短信登录", "扫码登录", "短信登录", "保活",
-                       "会员", "2.0.1 正式版"):
+                       "会员"):
             self.assertIn(needle, page, "配置页缺少：%s" % needle)
+        # 版本号不要硬编码进文案断言：每次发版都会假红。
+        # 只要求页面确实标了一个语义化版本。
+        self.assertRegex(page, r"\d+\.\d+\.\d+ 正式版")
         self.assertNotIn("手机投屏", page)
 
     def test_secret_code_not_hardcoded_in_page(self):
