@@ -1,9 +1,9 @@
 # 爱迷茫 · 飞牛影视在线源插件（FPK）
 
 > 内部包名仍是 `trimonline`（这样升级安装能认出旧版本，不会装成两个应用）。
-> 在应用中心里显示的名字是 **爱迷茫**。当前版本 **2.0.1**（正式版）。
+> 在应用中心里显示的名字是 **爱迷茫**。当前版本 **2.0.3**（正式版）。
 >
-> **下载安装包**：[`dist/爱迷茫-2.0.1.fpk`](dist/爱迷茫-2.0.1.fpk)（[校验和](dist/爱迷茫-2.0.1.fpk.sha256)）
+> **下载安装包**：[`dist/爱迷茫-2.0.3.fpk`](dist/爱迷茫-2.0.3.fpk)（[校验和](dist/爱迷茫-2.0.3.fpk.sha256)）
 > **使用前必读**：[免责声明](免责声明.md) · [致谢与第三方组件](THIRD_PARTY_NOTICES.md)
 
 为飞牛影视（`trim.media`）增加 TVBox 式在线片源：**搜索 → 点开 → 选集 → 播放**，
@@ -65,10 +65,12 @@ TVBox 配置里 `type: 3` 的 drpy 规则站点也能真跑起来，不用装 Ja
 
 | 路径 | 说明 |
 |---|---|
-| `dist/爱迷茫-2.0.1.fpk` | 最新安装包（自带 JS 蜘蛛引擎） |
-| `dist/爱迷茫-2.0.1.fpk.sha256` | 校验和 |
+| `dist/爱迷茫-2.0.3.fpk` | 最新安装包（自带 JS 蜘蛛引擎） |
+| `dist/爱迷茫-2.0.3.fpk.sha256` | 校验和 |
 | `dist/SHA256SUMS.txt` | 全部版本的校验清单 |
-| `2.0.1-更新说明.md` | 这一版：安装时检测 Chromium + 配置页一键安装 |
+| `2.0.3-更新说明.md` | 这一版：修复 TV 端「播放出错」+ 补齐 TV 播放链路 |
+| `2.0.2-更新说明.md` | 上一版：源级用户定向 + 两种可见模式 |
+| `2.0.1-更新说明.md` | 更早：安装时检测 Chromium + 配置页一键安装 |
 | `2.0.0-更新说明.md` | 上一版：VIP 源 + MI 直播库 + 金框封面 + 继续播放修复 + 搜索不截断 |
 | `1.3.0-更新说明.md` | 上一版：查询方式可选 + 用户自选启用源数量 |
 | `1.2.9-更新说明.md` | 更早：本地播放记录恢复 + 在线源按用户可见 |
@@ -98,12 +100,12 @@ TVBox 配置里 `type: 3` 的 drpy 规则站点也能真跑起来，不用装 Ja
 
 **方式一 · 应用中心界面（推荐；升级也会执行安装回调）**
 
-应用中心 → 侧边栏底部「手动安装」→ 选择 `爱迷茫-2.0.1.fpk`
+应用中心 → 侧边栏底部「手动安装」→ 选择 `爱迷茫-2.0.3.fpk`
 
 **方式二 · 命令行（首次安装）**
 
 ```bash
-sudo appcenter-cli install-fpk /vol1/1000/MUSCI/爱迷茫-2.0.1.fpk    # 换成你自己的实际路径
+sudo appcenter-cli install-fpk /vol1/1000/MUSCI/爱迷茫-2.0.3.fpk    # 换成你自己的实际路径
 ```
 
 > 部分 fnOS 版本的 `appcenter-cli` 升级时只暂存 FPK、不执行 upgrade 回调；
@@ -504,16 +506,16 @@ python3 -m py_compile src/trimonline/app/mitm/*.py
 find src -name __pycache__ -type d -prune -exec rm -rf {} +
 
 # 3) 打包（产出 dist/爱迷茫-<版本>.fpk 与 .sha256）
-python3 tools/build_fpk.py 2.0.1
+python3 tools/build_fpk.py 2.0.3
 
 # 4) 校验
-cd dist && sha256sum -c 爱迷茫-2.0.1.fpk.sha256
+cd dist && sha256sum -c 爱迷茫-2.0.3.fpk.sha256
 ```
 
 只改 Python / 前端、不重打运行库时：
 
 ```bash
-python3 tools/build_fpk.py 2.0.1 --no-lib
+python3 tools/build_fpk.py 2.0.3 --no-lib
 ```
 
 运行库需要 **aiohttp** 及其依赖 + **quickjs**（其余全是标准库）。

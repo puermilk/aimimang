@@ -555,7 +555,7 @@ pre{background:#0d1117;border:1px solid var(--line);border-radius:8px;
 <body><div class="wrap">
 
 <h1>爱迷茫</h1>
-<div class="sub">飞牛影视在线源插件 · <b style="color:var(--ok)">2.0.2 正式版</b> · 源设置（<span class="mono" id="file">conf/sources.json</span>）<br>
+<div class="sub">飞牛影视在线源插件 · <b style="color:var(--ok)">2.0.3 正式版</b> · 源设置（<span class="mono" id="file">conf/sources.json</span>）<br>
   VIP 源 在下方，需先输入暗号开启。</div>
 
 <div class="note"><b>声明</b>：本插件只是一个「播放器侧」的中转工具，不含任何影视内容，
