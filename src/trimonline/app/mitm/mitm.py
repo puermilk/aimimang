@@ -16,6 +16,7 @@ import base64
 import concurrent.futures
 import functools
 import hashlib
+import hmac
 import ipaddress
 import json
 import os
@@ -2210,11 +2211,11 @@ def hgdj_synth_stream(guid, rec, headers=None):
         "display_aspect_ratio": "9:16", "pix_fmt": "yuv420p",
         "level": "120", "color_space": "bt709",
         "color_transfer": "bt709", "color_primaries": "bt709",
-        "duration": dur, "dv_profile": "", "refs": 1,
+        "duration": dur, "dv_profile": 0, "refs": 1,
         "r_frame_rate": "25/1", "avg_frame_rate": "25/1",
         "bits_per_raw_sample": "8", "bps": 4000000, "progressive": 1,
         "bit_depth": 8, "wrapper": "mp4", "create_time": now,
-        "update_time": now, "rotation": 0, "ext1": "", "is_bluray": 0,
+        "update_time": now, "rotation": 0, "ext1": 0, "is_bluray": False,
     }
     audio_streams = [{
         "media_guid": guid, "title": "",
@@ -2602,11 +2603,11 @@ def synth_stream(guid, headers=None):
         "display_aspect_ratio": aspect, "pix_fmt": "yuv420p",
         "level": str(pr.get("level") or 40), "color_space": "bt709",
         "color_transfer": "bt709",
-        "color_primaries": "bt709", "duration": dur, "dv_profile": "",
+        "color_primaries": "bt709", "duration": dur, "dv_profile": 0,
         "refs": 1, "r_frame_rate": "24/1", "avg_frame_rate": "24/1",
         "bits_per_raw_sample": "8", "bps": 4000000, "progressive": 1,
         "bit_depth": 8, "wrapper": "hls", "create_time": now,
-        "update_time": now, "rotation": 0, "ext1": "", "is_bluray": 0,
+        "update_time": now, "rotation": 0, "ext1": 0, "is_bluray": False,
     }
     audio_streams = [{
         "media_guid": guid, "title": "",
@@ -2630,6 +2631,149 @@ def synth_stream(guid, headers=None):
                      "cloud_storage_info": None}}
 
 
+# ---- media/range → HLS 302 的「免登录清单通行证」 ----
+# 安卓/电视端会把在线条目当本地文件取流：先请求 /api/v1/media/range/<guid>，
+# 再自己跟随 302 去取清单。实测跟随请求不带 Authorization（日志里是
+# TRACE-BLOCK user=-），online_visibility != all 时被挡成 404，播放器随即
+# play/quit（0s）；iOS 走 play_link 自带鉴权，所以不受影响。
+# 给 302 目标签一个短时、只对本次 guid/集数生效的通行证，清单侧验签放行。
+# 分片（seg）和图片本来就已豁免鉴权，不需要额外处理。
+_MEDIA_PASS = {"secret": "", "ttl": 21600}   # 6h：足够覆盖一次电影/长剧的拖动重取
+
+
+def _media_pass_secret():
+    if _MEDIA_PASS["secret"]:
+        return _MEDIA_PASS["secret"]
+    fp = os.path.join(CONF_DIR, "media_pass.key")
+    try:
+        s = open(fp, encoding="utf-8").read().strip()
+        if len(s) >= 32:
+            _MEDIA_PASS["secret"] = s
+            return s
+    except Exception:
+        pass
+    s = os.urandom(24).hex()
+    try:
+        os.makedirs(CONF_DIR, exist_ok=True)
+        fd = os.open(fp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        with os.fdopen(fd, "w") as f:
+            f.write(s)
+        log("media pass: 已生成 conf/media_pass.key")
+    except Exception as e:
+        log("media pass key 写入失败:", repr(e)[:80])
+    _MEDIA_PASS["secret"] = s
+    return s
+
+
+def media_pass_make(guid, ep):
+    exp = int(time.time()) + _MEDIA_PASS["ttl"]
+    msg = ("%s|%d|%d" % (guid, int(ep or 0), exp)).encode()
+    sig = hmac.new(_media_pass_secret().encode(), msg,
+                   hashlib.sha256).hexdigest()[:24]
+    return "pe=%d&ps=%s" % (exp, sig)
+
+
+def media_pass_ok(path, query):
+    """校验 302 清单带回来的通行证；guid/集数/有效期任一不符都不放行。"""
+    try:
+        m = GUID_RE.search(path or "")
+        if not m:
+            return False
+        guid = m.group(0)
+        exp = int((query.get("pe") or ["0"])[0] or 0)
+        ep = int((query.get("ep") or ["0"])[0] or 0)
+        sig = (query.get("ps") or [""])[0]
+        now = int(time.time())
+        if (not sig or exp < now
+                or exp > now + _MEDIA_PASS["ttl"] + 300):
+            return False
+        msg = ("%s|%d|%d" % (guid, ep, exp)).encode()
+        want = hmac.new(_media_pass_secret().encode(), msg,
+                        hashlib.sha256).hexdigest()[:24]
+        return hmac.compare_digest(want, sig)
+    except Exception:
+        return False
+
+
+async def _serve_playlist_bytes(writer, data, client_headers, wrote):
+    """按客户端 Range 供出合成后的清单。
+
+    续播路径的客户端把在线条目当「可按字节取的文件」来读：先发
+    bytes=0-1 探大小（期望 206 + Content-Range），再按大小取全量。
+    此前一律回 200 + 整份清单，客户端的取流状态机对不上号，拿到
+    清单也不解析，进度条写一笔就退出（实测 record 292s/0s 后 quit）。
+    有 Range → 206 + Content-Range 切片；无 Range → 200 全量（原行为，
+    成功路径 play_link 的取法不受影响）。"""
+    rng = (client_headers.get("range") or "").strip()
+    mm = re.match(r"bytes=(\d*)-(\d*)$", rng) if rng else None
+    if mm and (mm.group(1) or mm.group(2)):
+        s0 = int(mm.group(1) or 0)
+        tot = len(data)
+        s1 = int(mm.group(2)) if mm.group(2) else tot - 1
+        s1 = min(s1, tot - 1)
+        if s0 >= tot or s0 > s1:
+            # 越界（续播客户端按估算 size 直接 seek 到文件中后段）：
+            # 不回 416——那只会让取流端就此放弃。宽松回 200 全量，
+            # 客户端嗅到 #EXTM3U 会自己切进 HLS 管线（实测有效）。
+            s0 = 0
+            blob = data
+        else:
+            blob = data[s0:s1 + 1]
+        if wrote is not None:
+            wrote.add(1)
+        if blob is data or (s0 == 0 and len(blob) == tot):
+            await write_head(writer, 200, {
+                "Content-Type": "application/vnd.apple.mpegurl",
+                "Content-Length": tot,
+                "Accept-Ranges": "bytes",
+                "Cache-Control": "no-cache",
+                "Connection": "keep-alive",
+            })
+        else:
+            await write_head(writer, 206, {
+                "Content-Type": "application/vnd.apple.mpegurl",
+                "Content-Length": len(blob),
+                "Content-Range": "bytes %d-%d/%d" % (s0, s1, tot),
+                "Accept-Ranges": "bytes",
+                "Cache-Control": "no-cache",
+                "Connection": "keep-alive",
+            })
+        writer.write(blob)
+        await writer.drain()
+        return True
+    if wrote is not None:
+        wrote.add(1)
+    await write_head(writer, 200, {
+        "Content-Type": "application/vnd.apple.mpegurl",
+        "Content-Length": len(data),
+        "Accept-Ranges": "bytes",
+        "Cache-Control": "no-cache",
+        "Connection": "keep-alive",
+    })
+    writer.write(data)
+    await writer.drain()
+    return True
+
+
+def synth_stream_list(guid, headers=None):
+    """GET /v/api/v1/stream/list/<guid> 的在线合成。
+
+    官方模板是 data.files[] / video_streams[] / audio_streams[] /
+    subtitle_streams[]。此前在线条目这里回空数组，客户端拿不到流信息，
+    把条目当本地文件走 media/range 字节解复用 → 必然失败（点开转圈后退出）。
+    结构与 synth_stream 保持同一套字段，files[0].guid = 条目 guid，
+    使客户端按官方习惯发起的 /v/media/range/<guid> 仍由我们接管。"""
+    st = synth_stream(guid, headers=headers)
+    data = st.get("data") or {}
+    fs = data.get("file_stream")
+    vs = data.get("video_stream")
+    return {"msg": "", "code": 0,
+            "data": {"files": [fs] if fs else [],
+                     "video_streams": [vs] if vs else [],
+                     "audio_streams": list(data.get("audio_streams") or []),
+                     "subtitle_streams": list(data.get("subtitle_streams") or [])}}
+
+
 def synth_play(guid, ep_index=0, headers=None):
     _rec = registry.get(guid) or {}
     if hgdj_is_rec(_rec):
@@ -2647,7 +2791,8 @@ def synth_play(guid, ep_index=0, headers=None):
             "audio_guid": "ona" + guid[2:][:29], "audio_index": 1,
             "hls_time": 4, "is_subtitle_external": 1 if sg else 0,
             "media_guid": guid,
-            "play_link": f"/v/media/online/{guid}.m3u8?ep={ep_index}",
+            "play_link": (f"/v/media/online/{guid}.m3u8?ep={ep_index}"
+                          f"&{media_pass_make(guid, ep_index)}"),
             "line_count": _lines,
             "subtitle_guid": sg, "subtitle_index": 0 if sg else -1,
             "subtitle_link": ("/v/api/v1/subtitle/dl/" + sg) if sg else "",
@@ -4697,17 +4842,8 @@ async def _proxy_once(target, hdrs, referer, client_headers, writer,
                 new = rewrite_playlist(text, str(resp.url), referer,
                                        props).encode()
 
-                if wrote is not None:
-                    wrote.add(1)
-                await write_head(writer, 200, {
-                    "Content-Type": "application/vnd.apple.mpegurl",
-                    "Content-Length": len(new),
-                    "Cache-Control": "no-cache",
-                    "Connection": "keep-alive",
-                })
-                writer.write(new)
-                await writer.drain()
-                return True
+                return await _serve_playlist_bytes(
+                    writer, new, client_headers, wrote)
             # AES-128 key: HLS 规定 #EXT-X-KEY 的密钥内容必须是 base64
             # 字符串，但该源返回 16 字节原始二进制。播放器按 base64 解码会
             # 失败 → AES 解密失败 → "播放失败"。这里转成 base64 再返回。
@@ -5663,7 +5799,14 @@ async def handle_request(reader, writer, head, headers, body):
     if path.startswith("/v/api/v1/media/"):
         path = "/v/media/" + path[len("/v/api/v1/media/"):]
     if path.startswith("/v/media/"):
-        if path.startswith("/v/media/online/") and not allow_online:
+        # 跟随 302 来取清单的请求不带登录态，凭通行证放行
+        if (path.startswith("/v/media/online/")
+                and not allow_online
+                and not media_pass_ok(path, query)
+                and path not in ("/v/media/online/seg",
+                                 "/v/media/online/img")):
+            log("TRACE-BLOCK", path[:60], "user=",
+                (req_user or {}).get("username") or "-")
             await write_head(writer, 404, {"Content-Length": 0,
                                            "Connection": "close"})
             writer.close()
@@ -5773,9 +5916,20 @@ async def handle_request(reader, writer, head, headers, body):
             if not ep:
                 ep = int((pl_q.get("ep") or ["0"])[0] or 0)
         if g2 and g2 in registry:
-            if not allow_online:
+            if not allow_online and not media_pass_ok(path, query):
                 await write_head(writer, 404, {"Content-Length": 0,
                                                "Connection": "close"})
+                writer.close()
+                return
+            if path.startswith("/v/media/range/"):
+                # 客户端把在线条目当本地文件、对 media/range 发起字节取流时，
+                # 与其回一段 m3u8 文本让它解复用失败（转圈退出），不如把
+                # 这次取流重定向到真正的 HLS 清单：跟随 302 的取流端直接
+                # 进入播放管线。本地条目不走这里（g2 in registry 才到这）。
+                await write_head(writer, 302, {
+                    "Location": "/v/media/online/%s.m3u8?ep=%d&%s" % (
+                        g2, ep or 0, media_pass_make(g2, ep or 0)),
+                    "Content-Length": 0, "Connection": "close"})
                 writer.close()
                 return
             await serve_manifest(g2, ep, headers, writer, line)
@@ -6135,6 +6289,14 @@ async def handle_request(reader, writer, head, headers, body):
             await ensure_resolved(gg)
             writer.write(json_response(
                 {"msg": "", "code": 0, "data": synth_episodes(gg, registry[gg])}))
+            await writer.drain()
+            return
+        if path.startswith("/v/api/v1/stream/list/"):
+            # 官方结构（files/video_streams/...），缺了客户端会当本地
+            # 文件去 media/range 解复用，必然失败。
+            kick_props_probe(gg)
+            _log_play_req(path, body)
+            writer.write(json_response(synth_stream_list(gg, headers=headers)))
             await writer.drain()
             return
         if path == "/v/api/v1/play/info":
